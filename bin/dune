@@ -1,4 +1,4 @@
 (executable
  (public_name llvm_of_jvm)
  (name main)
- (libraries llvm_of_jvm))
+ (libraries llvm_of_jvm llvm javalib))

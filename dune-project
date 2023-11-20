@@ -19,7 +19,7 @@
  (name llvm_of_jvm)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml dune)
+ (depends ocaml dune llvm=16.0.6+nnp javalib=3.2.2)
  (tags
   (topics "to describe" your project)))
 
