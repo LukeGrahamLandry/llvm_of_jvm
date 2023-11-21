@@ -12,8 +12,10 @@ Once again arrived at the age old question of do i directly translate bytecode t
 Maybe the answer to my printing problem is using the repl but i can't figure out how to make it find library implementations. Other than that I don't really mind it. You kinda just try haskell syntax and if that doesn't work try rust syntax. 
 
 To allocate space for the variables, need to know thier types, its in the local_variable_table. Each entry contains and index, which is weird are they not in order? Its the doubles take two slots thing again. 
-start_pc and length are the lifetimes of the variable. Kinda afraid cause the spec says its optional and for debuggers. Maybe I'm supposed to be using the stack_map_table instead? sad day, its not there in my test so yeah was optional.
+start_pc and length are the lifetimes of the variable. Kinda afraid cause the spec says its optional and for debuggers. Maybe I'm supposed to be using the stack_map_table instead? sad day, its not there in my test so yeah was optional. Even stack_map seems to be optional, can see with javap only some have it and it doesnt seem to have the info i want. Do i really have to infer types of everything? I guess its easy to just look at the types of all the loads and stores. Primitives have different opcodes but how do i know classes beyond just reference? 
 - https://docs.oracle.com/javase/specs/jvms/se7/html/jvms-4.html#jvms-4.7.13
+
+Hashtbls are weird, `add` lets you have deuplicates? `replace` is the normal thing. 
 
 ## Reading java bytecode (Nov 20)
 
