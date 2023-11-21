@@ -14,13 +14,22 @@ type codegen = {
     builder: llbuilder;
 }
 
+let lltype_of_basic (ctx: codegen) (basic: java_basic_type) =
+    (match basic with
+        | `Int -> i32_type
+        | `Short | `Char -> i16_type
+        | `Byte -> i8_type
+        | `Bool -> i1_type
+        | `Long -> i64_type
+        | `Float -> float_type
+        | `Double -> double_type
+        ) ctx.context
+
 let lltype_of_jtype (ctx: codegen) (ty: value_type): lltype = 
     match ty with
     | TObject _ -> raise (Fail "TODO: TObject")
-    | TBasic basic -> 
-        match basic with
-        | `Int -> i32_type ctx.context
-        | _ -> raise (Fail "non-int TBasic")
+    | TBasic basic -> lltype_of_basic ctx basic
+
 
 let llfunc_type (ctx: codegen) (sign: method_signature): lltype = 
     let arg_types = Array.of_list (List.map (lltype_of_jtype ctx) (ms_args sign)) in
@@ -30,16 +39,62 @@ let llfunc_type (ctx: codegen) (sign: method_signature): lltype =
     in
     function_type ret arg_types
 
+(* ctx must already be pointing to the right basic block *)
 let _stack_alloca (ctx: codegen) (ty: value_type): llvalue = 
     build_alloca (lltype_of_jtype ctx ty) "" ctx.builder
 
-let convert_method (_ctx: codegen) (code: jcode) = 
-    printf "max stack size: %d. max locals: %d\n "  code.c_max_stack code.c_max_locals;
+(* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. *)
+let find_basic_blocks (code: jopcode array): int list =
+    fst (Array.fold_left
+        (fun (blocks, index) op ->
+            let new_blocks = match op with
+            | OpIf (_, i) 
+            | OpIfCmp (_, i) 
+            | OpGoto i 
+                -> index + i :: blocks
+            | _ -> blocks in
+            (new_blocks, index + 1)
+        ) ([0], 0) code)
+
+type blockmap = (int, llbasicblock) Hashtbl.t
+let init_basic_blocks (ctx: codegen) (func: llvalue) (blocks: int list): blockmap = 
+    let pairs = List.map (fun index -> (index, (append_block ctx.context "" func))) blocks in
+    Hashtbl.of_seq (List.to_seq pairs)
+
+(* Create the entry block before block 0 and emit alloca instructions for each local variable in the method *)
+type localmap = (int, llvalue) Hashtbl.t (* local index -> stack pointer value *)
+let alloc_locals (ctx: codegen) (func: llvalue) (code: jcode): localmap = 
+    let entry = append_block ctx.context "" func in 
+    position_at_end entry ctx.builder; 
+    let pairs = List.map (fun (_start_pc, _length, name, ty, index) ->
+        let val_ty = ty in
+        let ptr = build_alloca (lltype_of_jtype ctx val_ty) name ctx.builder in
+        (index, ptr)
+    ) (Option.get code.c_local_variable_table) in
+    Hashtbl.of_seq (List.to_seq pairs)
+
+
+
+
+
+    
+
+let convert_method (ctx: codegen) (code: jcode) (func: llvalue) = 
+    printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals;
     let _ = Array.fold_left
-        (fun _s op ->
+        (fun index op ->
+            printf "%d.  " index;
             print_endline (JPrint.jopcode op);
-            ()
-        ) () code.c_code in
+            index + 1
+        ) 0 code.c_code in
+    let block_positions = find_basic_blocks code.c_code in
+    print_string "Basic block indices: ";
+    List.iter (printf "%d, ") block_positions;
+    let _blocks = init_basic_blocks ctx func block_positions in
+    let _locals = alloc_locals ctx func code in
+    
+    (* Hashtbl.iter (fun index bb -> printf "%d %d" index (block_address func bb)) blocks; *)
+    print_endline "\n================";
     ()
 
 let emit_method (ctx: codegen) (m: jcode jmethod) = 
@@ -53,11 +108,8 @@ let emit_method (ctx: codegen) (m: jcode jmethod) =
             | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode
+                    convert_method ctx jcode llfunc
         ) 
-    
-
-
 
 let () = 
     let c = create_context () in

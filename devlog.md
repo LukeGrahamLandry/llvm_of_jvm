@@ -1,3 +1,20 @@
+## Whats in java bytecode
+
+- https://en.wikipedia.org/wiki/List_of_Java_bytecode_instructions
+
+There are two things, local variables and ~the~ stack. But ~the~ stack is not the call stack. 
+So every frame of the call stack has some local variables and a new ~the~ stack. Where opcodes load/store things between local variables and ~the~ stack and always perform operations on ~the~ stack. So `(c = a + b)` becomes `(load a; load b; add; store c;)`. Locals refered to by index (do I get thier types up front?) but no random access to the stack I think. So locals can just be alloc but then do I have to actually do all the stack manipulation at runtime? Maybe start with that but seems there should be some trivial data flow analysis that can be done at compile time for many sequences like the example above. But I'm afraid because what happens when you start jumping around. 
+
+All the if* (cmp branch) instructions refer to target opcode index with a branchoffset. So I need to reconstruct the basic blocks to give to llvm. 
+
+Once again arrived at the age old question of do i directly translate bytecode to llvm ir or go through my own representation that makes more sense to me in the middle. Having more layers always feels kinda verbose but it really seems like the trick that makes writing compilers much easier. 
+
+Maybe the answer to my printing problem is using the repl but i can't figure out how to make it find library implementations. Other than that I don't really mind it. You kinda just try haskell syntax and if that doesn't work try rust syntax. 
+
+To allocate space for the variables, need to know thier types, its in the local_variable_table. Each entry contains and index, which is weird are they not in order? Its the doubles take two slots thing again. 
+start_pc and length are the lifetimes of the variable. Kinda afraid cause the spec says its optional and for debuggers. Maybe I'm supposed to be using the stack_map_table instead? sad day, its not there in my test so yeah was optional.
+- https://docs.oracle.com/javase/specs/jvms/se7/html/jvms-4.html#jvms-4.7.13
+
 ## Reading java bytecode (Nov 20)
 
 library confusing choice: jopcode is like a nice ocaml type that has the data you want already parsed out but if you iterate over the opcodes in a method, you get a bunch of OpInvalid for every argument that was in the bytecode and already parsed out, so i guess just skip those? is there a method to only iterate real things instead of eveery byte? 
@@ -21,7 +38,7 @@ Why does jmethod have a generic parameter?
 - https://github.com/javalib-team/javalib
 - https://ocamlverse.net/content/quickstart_ocaml_project_dune.html
 
-For some reason ocaml is like first class citizen with in-tree llvm bindings and i want to practise a functional-y language so might as well. 
+For some reason ocaml is like first class citizen with in-tree llvm bindings and i want to practise a functional-y language so might as well learn ocaml. 
 
 
 - Build and run: `dune exec llvm_of_jvm`
