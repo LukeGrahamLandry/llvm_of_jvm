@@ -47,11 +47,20 @@ public class OpTest {
         return b;
     }
 
-    public static int loop(int a) {
+    public static int minus_ten_while(int a) {
         int b = 0;
-        while (a < 10) {
+        while (a > 10) {
             a -= 1;
-            b += a;
+            b += 1;
+        }
+        return b;
+    }
+
+    public static int minus_ten_for(int a) {
+        int b = 0;
+        for (int c=a; c > 10; c--) {
+            a -= 1;
+            b += 1;
         }
         return b;
     }

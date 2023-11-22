@@ -1,3 +1,26 @@
+## Jumping around (Nov 22)
+
+Helpfully, bytecode and llvm ir have overlap in the int cmp types. Just ignoring stuff about references for now but would probably be easy to just cast to an int (or do they have a ptr_diff instruction?). 
+Previous splitting into blocks seems to work fine. Just treat the implicit fallthrough on a failed comparison as an explicit jump to the very next instruction. 
+
+Loops: 
+
+Goto opcode can just go to a random place so we mark that as the start of a new block. 
+But the instruction before needs to fall through into that new block. 
+So as we're emitting, if the next instruction should be the start of a block (we saw it as a jump target) 
+but this instruction isn't a terminator, need to add the explicit terminator. 
+Which almost sounds elegant except for the variable number of OpInvalid (for args) in the bytecode stream. 
+So it's not trivial to know if the next real instruction is the start of a block. 
+Could look ahead to the next but that's annoying.
+
+Actually, I can just do it at the start of the next instruction instead of the end of the previous instruction. 
+I'm already checking if we're entering a new block so it can move the builder so when that happens, 
+first check if the current block is terminated and if not, do the explicit fallthrough. 
+
+So far so good on the stack_comptime_safe assumption. Suppose it would make sense if javac never generated code 
+that didn't have that property because they have very similar goals as me for static data flow analysis by the jvm.
+
+
 ## final locals (Nov 22)
 
 The next obvious fix is noticing when arguments are final so don't need to copy to locals. 
@@ -24,6 +47,7 @@ The scary thing is what happens when the code branches? Are different basic bloc
 on the stack and then converge and read it like a phi node? 
 I guess I need to check if a basic block changes the size of the stack or ever goes below where it started and fall back to doing it at runtime. 
 I'm hoping the stack promises to be the same height before and after each statement like in Crafting Interpreters. 
+Then as I iterate over the instructions, keep a stack of llvalue and use that to emit instructions. 
 
 That got it down to 7 lines for add. 
 
