@@ -52,7 +52,8 @@ let find_basic_blocks (code: jopcode array): int list =
         (fun (blocks, index) op ->
             let new_blocks = match op with
             | OpIf (_, i) 
-            | OpIfCmp (_, i) 
+            | OpIfCmp (_, i) (* conditional jump can fall through. represent that as jumping to the next instruction *)
+                -> (index + 1) :: (index + i) :: blocks
             | OpGoto i 
                 -> index + i :: blocks
             | _ -> blocks in
@@ -60,7 +61,7 @@ let find_basic_blocks (code: jopcode array): int list =
         ) ([0], 0) code)
 
 type blockmap = (int, llbasicblock) Hashtbl.t
-let _init_basic_blocks ctx func (blocks: int list): blockmap = 
+let init_basic_blocks ctx func (blocks: int list): blockmap = 
     let pairs = List.map (fun index -> (index, (append_block ctx.context "" func))) blocks in
     Hashtbl.of_seq (List.to_seq pairs)
 
@@ -146,8 +147,9 @@ let op_stack_delta op =
     | OpStore _ -> -1
     | OpLoad _ -> 1
     | OpReturn _ -> -1
+    | (OpCmp _) | (OpIfCmp _) -> -2
+    | OpIf _ -> -1 (* comparing to zero *)
     | _ -> raise (Fail ("TODO: stack_delta " ^ (JPrint.jopcode op)))
-
 
 (* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
 let rec sliding_pairs (l: 'a list) =
@@ -158,7 +160,8 @@ let rec sliding_pairs (l: 'a list) =
 
 (* block_starts must be in accending order *)
 let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
-    let block_ranges = sliding_pairs (List.concat [[0]; block_starts; [Array.length code]]) in
+    let starts = List.sort compare block_starts in
+    let block_ranges = sliding_pairs (List.concat [starts; [Array.length code]]) in
     let block_comptime_safe start last =
         (* printf "block start=%d last=%d" start last; *)
         let (_, res, stack) = Array.fold_left (fun (index, safe, stack) op -> 
@@ -197,6 +200,23 @@ let bin_op (f: llvalue -> llvalue -> llvalue) compstack =
     (* Argument order matters for subtraction and division *)
     (f b a) :: (drop_fst (drop_fst compstack))
 
+let intcmp kind: Llvm.Icmp.t = 
+    match kind with
+    | `IEq | `Eq -> Eq
+    | `INe | `Ne -> Ne
+    | `ILt | `Lt -> Slt
+    | `IGe | `Ge -> Sge
+    | `IGt | `Gt -> Sgt
+    | `ILe | `Le -> Sle
+    | `AEq | `ANe | `Null | `NonNull -> raise (Fail "TODO: cmp ptr")
+
+let emit_const ctx (v: jconst): llvalue = 
+    match v with
+    | `Int n -> const_int (i32_type ctx.context) (Int32.to_int n)
+    | _ -> raise (Fail "TODO: emit_const non-int")
+
+let assert_empty l = if not (List.length l == 0) then raise (Fail "Expected list to be empty") else l
+
 let convert_method ctx code sign = 
     let func = declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module in
     (* printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals; *)
@@ -206,7 +226,15 @@ let convert_method ctx code sign =
         then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name sign)));
 
     let locals = alloc_locals ctx func code sign in
-    let emit_op ctx (compstack: llvalue list) op: llvalue list = 
+    let basic_blocks = init_basic_blocks ctx func block_positions in
+    let first = Hashtbl.find basic_blocks 0 in
+    let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
+
+    let emit_op ctx (compstack: llvalue list) op index: llvalue list = 
+        (match Hashtbl.find_opt basic_blocks index with
+        | Some bb -> position_at_end bb ctx.builder
+        | None -> ());
+
         let do_bin f = bin_op (fun a b -> f a b "" ctx.builder) compstack in 
         match op with
         | OpLoad (_, i) -> load_local ctx i locals :: compstack
@@ -217,14 +245,33 @@ let convert_method ctx code sign =
         | OpSub _ty -> do_bin build_sub
         | OpMult _ty -> do_bin build_mul
         | OpDiv _ty -> do_bin build_sdiv
+        | OpIfCmp (kind, offset) -> 
+            let true_block = Hashtbl.find basic_blocks (index + offset) in
+            let false_block = Hashtbl.find basic_blocks (index + 1) in
+            let a = List.nth compstack 0 in
+            let b = List.nth compstack 1 in
+            let c = build_icmp (intcmp kind) b a "" ctx.builder in
+            let _ = build_cond_br c true_block false_block ctx.builder in
+            assert_empty (drop_fst (drop_fst compstack))
+        | OpIf (kind, offset) -> 
+            let true_block = Hashtbl.find basic_blocks (index + offset) in
+            let false_block = Hashtbl.find basic_blocks (index + 1) in
+            let a = List.nth compstack 0 in
+            let b = const_int (i32_type ctx.context) 0 in
+            let c = build_icmp (intcmp kind) b a "" ctx.builder in
+            let _ = build_cond_br c true_block false_block ctx.builder in
+            assert_empty (drop_fst (drop_fst compstack))
         | OpReturn _ty -> 
             let _ = build_ret (List.hd compstack) ctx.builder in
-            drop_fst compstack
+            (* This will always work because of stack_comptime_safe*)
+            assert_empty (drop_fst compstack)
+        | OpConst v -> (emit_const ctx v) :: compstack
+        | OpInvalid -> compstack
         | _ -> raise (Fail ("TODO: emit_op " ^ JPrint.jopcode op)) in
     
     let _ = Array.fold_left
     (fun (stack, index) op ->
-        let new_stack = emit_op ctx stack op in
+        let new_stack = emit_op ctx stack op index in
         (new_stack, index + 1)
     ) ([], 0) code.c_code in
 
@@ -246,7 +293,7 @@ let emit_method ctx m =
 
 
 let () = 
-    let fname = ["add"; "math"; "add_mut"] in
+    let fname = ["add"; "math"; "add_mut"; "max"; "ifzero"] in
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     

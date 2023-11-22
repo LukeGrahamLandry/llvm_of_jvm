@@ -29,6 +29,14 @@ public class OpTest {
         }
     }
 
+    public static int ifzero(int a) {
+        if (a == 0) {
+            return 1;
+        } else {
+            return a;
+        }
+    }
+
     public static int redundant(int a) {
         int b = 0;
         if (a == 5) {
