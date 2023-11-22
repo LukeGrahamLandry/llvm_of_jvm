@@ -9,7 +9,9 @@ Kinda awquard information passing becuase alloc_locals counts so it knows which 
 doesn't know the argument registers so it just leaves a None in the localmap. Then when store_args sees a None, it trusts that must be final and replaces it with a FinalArg. 
 Should maybe combine so first look at the function signeture and figure out the mapping of arguments to variable indexes (which is weird cause doubles take 2 slots) and then pass that to alloc locals so it can inline store_args there. 
 
-But anyway, the current version works and makes the `add` function look reasonable. Doing the same thing with mutating the arg looks silly but I don't want to mess with it because ssa form gets scary once you add branching. 
+Yeah that does feel better tho `alloc_locals` is a bit chonky now. 
+
+Now the `add` function look reasonable. Doing the same thing with mutating the arg looks silly but I don't want to mess with it because ssa form gets scary once you add branching. 
 Also should do the same thing for final locals that aren't arguments (1 store) but haven't yet. 
 
 ## comptime stack (Nov 21)
