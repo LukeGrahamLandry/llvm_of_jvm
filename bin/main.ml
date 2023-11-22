@@ -105,6 +105,9 @@ type argplace =
     | Mut of llvalue (* pointer to stack slot*)
 type localmap = (int, argplace) Hashtbl.t
 
+let args_slotcount sign = 
+    List.fold_left (fun acc ty -> acc + (slotcount_for ty)) 0 (ms_args sign)
+    
 (* Returns map of local indexes for the function arguments to thier llvm ssa. 
    ie. f(int, long, int) -> {0=%0, 1=%1, 3=%2} because longs take two slots *)
 let find_arg_locals func sign = 
@@ -150,6 +153,10 @@ let op_stack_delta op =
     | (OpCmp _) | (OpIfCmp _) -> -2
     | OpIf _ -> -1 (* comparing to zero *)
     | (OpIInc _) -> 0
+    | OpInvoke ((`Static _), sign) -> 
+        let ret = if (ms_rtype sign) == None then 0 else 1 in
+        ret - args_slotcount sign
+    | OpInvalid -> 0
     | _ -> raise (Fail ("TODO: stack_delta " ^ (JPrint.jopcode op)))
 
 (* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
@@ -220,15 +227,15 @@ let emit_const ctx (v: jconst): llvalue =
 
 let assert_empty l = if not (List.length l == 0) then raise (Fail "Expected list to be empty") else l
 
-let convert_method ctx code sign = 
-    let func = declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module in
+let convert_method ctx code current_sign funcmap = 
+    let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
     (* printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals; *)
     
     let block_positions = find_basic_blocks code.c_code in
     if not (stack_comptime_safe block_positions code.c_code)
-        then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name sign)));
+        then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign)));
 
-    let locals = alloc_locals ctx func code sign in
+    let locals = alloc_locals ctx func code current_sign in
     let basic_blocks = init_basic_blocks ctx func block_positions in
     let first = Hashtbl.find basic_blocks 0 in
     let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
@@ -287,6 +294,17 @@ let convert_method ctx code sign =
             let new_val = build_add old_val inc "" ctx.builder in
             store_local ctx local_index locals new_val;
             compstack
+
+        | OpInvoke ((`Static (_ioc, _classname)), target_sign) -> 
+            if List.length (ms_args target_sign) > List.length compstack then raise (Fail ("stack underflow calling " ^ (ms_name target_sign)));
+            let func_ty = llfunc_type ctx target_sign in
+            let func_value = MethodMap.find target_sign funcmap in 
+            let (new_stack, arg_values) = List.fold_left (fun (stack, args) _arg -> 
+                (drop_fst stack, (List.nth stack 0) :: args)
+                ) (compstack, []) (ms_args target_sign) in
+            let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
+            if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
+            
         | OpInvalid -> compstack (* these slots are the arguments to previous instruction *)
         | _ -> raise (Fail ("TODO: emit_op " ^ JPrint.jopcode op))
 
@@ -303,7 +321,7 @@ let convert_method ctx code sign =
     ()
 
 
-let emit_method ctx m = 
+let emit_method ctx m funcmap = 
     match m with
     | AbstractMethod _ -> raise (Fail "TODO: AbstractMethod")
     | ConcreteMethod func ->
@@ -311,12 +329,24 @@ let emit_method ctx m =
             | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode func.cm_signature
+                    convert_method ctx jcode func.cm_signature funcmap
         ) 
 
 
+let forward_declare_method ctx m = 
+    match m with
+    | AbstractMethod _ -> raise (Fail "TODO: AbstractMethod")
+    | ConcreteMethod func ->
+        let sign = func.cm_signature in
+        let func = match func.cm_implementation with
+            | Native -> define_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module 
+            | Java _ -> declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module 
+            in
+        func
+
+       
 let () = 
-    let fname = ["add"; "math"; "add_mut"; "max"; "ifzero"; "minus_ten_while"; "minus_ten_for"] in
+    let fname = ["add"; "math"; "add_mut"; "max"; "ifzero"; "minus_ten_while"; "minus_ten_for"; "add3"; "short_circuit_or"; "short_circuit_and"] in
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
@@ -324,12 +354,12 @@ let () =
     let path = class_path "./java" in
     let cls = get_class path (make_cn "OpTest") in
     let methods = get_methods cls in
+    let funcmap = MethodMap.map (forward_declare_method ctx) methods in
+
     let _ = MethodMap.map (fun m ->
         let current_fname = ms_name (get_method_signature m) in
             if List.exists ((=) current_fname) fname then 
-                (* print_endline "\n";
-                print_endline (JPrint.method_signature (get_method_signature m)); *)
-                let _ = emit_method ctx m in
+                let _ = emit_method ctx m funcmap in
                 ()
         ) methods in
     (* print_endline "hi"; *)

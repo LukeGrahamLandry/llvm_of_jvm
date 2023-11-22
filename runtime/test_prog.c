@@ -8,6 +8,9 @@ int max(int a, int b);
 int ifzero(int a);
 int minus_ten_while(int a);
 int minus_ten_for(int a);
+int add3(int a, int b, int c);
+int short_circuit_or(int a, int b);
+int short_circuit_and(int a, int b);
 
 int main() {
     assert(add(1, 2) == 3);
@@ -25,4 +28,12 @@ int main() {
     assert(minus_ten_for(10) == 0);
     assert(minus_ten_for(25) == 15);
     assert(minus_ten_for(-5) == 0);
+    assert(add3(1, 2, 3) == 6);
+    assert(add3(1, 2, -3) == 0);
+    assert(short_circuit_or(0, 9) == 0);
+    assert(short_circuit_or(5, 5) == 5);
+    assert(short_circuit_or(6, 5) == 5);
+    assert(short_circuit_and(1, 2) == 1);
+    assert(short_circuit_and(1, 10) == 10);
+    assert(short_circuit_and(10, 2) == 2);
 }

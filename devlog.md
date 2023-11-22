@@ -1,3 +1,15 @@
+## Function calls (Nov 22)
+
+Functions receive arguments as locals (already handled) and they pass arguments by putting them on the stack before the call instruction. 
+For llvm to call a function it needs the type (signeture) and the function llvalue reference.
+Don't think you can get a function by name but when you define it you get the llvalue. 
+So need to forward declare everything I might want to call. (that's what i did in seesea anyway). 
+When you `append_block` you give it the function value to add to so seems its fine to not do everything in order,  
+there's no global current function that's the last you declared. 
+What's the difference between `declare_function` and `define_function`? Maybe internal defined later vs external to be imported later by the linker? 
+
+Short circuiting for `or` is fine because it just becomes normal operations but somehow `and` isnt fine and llvm complains about an empty block. 
+
 ## Jumping around (Nov 22)
 
 Helpfully, bytecode and llvm ir have overlap in the int cmp types. Just ignoring stuff about references for now but would probably be easy to just cast to an int (or do they have a ptr_diff instruction?). 

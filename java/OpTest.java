@@ -37,16 +37,6 @@ public class OpTest {
         }
     }
 
-    public static int redundant(int a) {
-        int b = 0;
-        if (a == 5) {
-            b = 1;
-        } else {
-            b = 2;
-        }
-        return b;
-    }
-
     public static int minus_ten_while(int a) {
         int b = 0;
         while (a > 10) {
@@ -64,4 +54,20 @@ public class OpTest {
         }
         return b;
     }
+
+    public static int add3(int a, int b, int c) {
+        return add(add(a, b), c);
+    }
+
+
+    public static int short_circuit_or(int a, int b) {
+        if (a == 0 || a == b) return a;
+        else return b;
+    }
+
+     public static int short_circuit_and(int a, int b) {
+        if (a == 1 && b == 2) return a;
+        else return b;
+    }
+
 }
