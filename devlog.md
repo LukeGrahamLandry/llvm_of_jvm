@@ -1,7 +1,21 @@
-## comptime stack
+## final locals (Nov 22)
+
+The next obvious fix is noticing when arguments are final so don't need to copy to locals. 
+So go over the ops and count how many times you store to each local slot. 
+If it's zero, it must be a function argument and you never mutate it so can use the llvm 
+ssa register directly instead of allocating a stack slot. 
+
+Kinda awquard information passing becuase alloc_locals counts so it knows which are final args but it 
+doesn't know the argument registers so it just leaves a None in the localmap. Then when store_args sees a None, it trusts that must be final and replaces it with a FinalArg. 
+Should maybe combine so first look at the function signeture and figure out the mapping of arguments to variable indexes (which is weird cause doubles take 2 slots) and then pass that to alloc locals so it can inline store_args there. 
+
+But anyway, the current version works and makes the `add` function look reasonable. Doing the same thing with mutating the arg looks silly but I don't want to mess with it because ssa form gets scary once you add branching. 
+Also should do the same thing for final locals that aren't arguments (1 store) but haven't yet. 
+
+## comptime stack (Nov 21)
 
 So currently it seems to work but I'm just emitting code for all the stack management stuff at runtime. 
-So my 1 line add function becomes 40 lines of llvm ir (instead of the 1 it should be). 
+So my 1 line add function becomes 40 lines of llvm ir (instead of the 2 it should be). 
 LLVM can probably just fix it on its own but that's boring and the insanity makes it hard to debug my code. 
 In this case, its obvious the stack book-keeping can be done at compile time to figure out how the data moves between instructions and then just generate code without a bunch of reduntant stuff. 
 The scary thing is what happens when the code branches? Are different basic blocks allowed to leave different things 
@@ -9,8 +23,14 @@ on the stack and then converge and read it like a phi node?
 I guess I need to check if a basic block changes the size of the stack or ever goes below where it started and fall back to doing it at runtime. 
 I'm hoping the stack promises to be the same height before and after each statement like in Crafting Interpreters. 
 
+That got it down to 7 lines for add. 
+
 I've been agressivly writing type annotations cause i find it hard to tell what's going on but 
 I figured out how to turn on the inlay type hints in vscode. It does seem to struggle with The Data Type Formerly Known As Enums sometimes tho.
+
+operand ordering: (load_a load_b op_div) means (a divided by b)
+
+that feels pretty good for day 3 ocaml. 
 
 ## Whats in java bytecode (Nov 21)
 

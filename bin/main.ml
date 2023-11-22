@@ -68,6 +68,17 @@ let find_local_types (code: jopcode array): localtypemap =
     ) code;
     locals
 
+let count_local_stores (code: jopcode array) =
+    let locals = Hashtbl.create 0 in
+    Array.iter (fun op -> 
+        match op with 
+        | OpStore (_, index) -> 
+            let prev = Option.default 0 (Hashtbl.find_opt locals index) in
+            (Hashtbl.replace locals index (prev + 1))
+        | _ -> ()
+    ) code;
+    locals
+
 let tblmap f m = Hashtbl.of_seq (Seq.map f (Hashtbl.to_seq m))
 
 
@@ -79,16 +90,27 @@ let lltype_of_jvmtype ctx (ty: jvm_type) =
     | `Float -> float_type ctx.context
     | `Double -> double_type ctx.context
 
+(* A function argument can be reassigned like a local but if it isn't, don't ask for a stack slot*)
+type argplace = 
+    FinalArg of  llvalue (* direct value *) 
+    | Mut of llvalue (* pointer to stack slot*)
+    | None (* FinalArg arg after alloc_locals, but before load_args *)
+type localmap = (int, argplace) Hashtbl.t
+
 (* Create the entry block before block 0 and emit alloca instructions for each local variable in the method *)
-type localmap = (int, llvalue) Hashtbl.t (* local index -> stack pointer value *)
 let alloc_locals ctx func code: localmap = 
     let types = find_local_types code.c_code in
+    let stores = count_local_stores code.c_code in
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
     tblmap (fun (i, jvmtype) -> 
-        let name = "var" ^ string_of_int i in
-        let ptr = build_alloca (lltype_of_jvmtype ctx jvmtype) name ctx.builder in
-        (i, ptr)
+        let stores = Option.default 0 (Hashtbl.find_opt stores i) in
+        if stores > 0 then
+            let name = "var" ^ string_of_int i in
+            let ptr = build_alloca (lltype_of_jvmtype ctx jvmtype) name ctx.builder in
+            (i, Mut ptr)
+        else (* if it's never stored, it must be a function argument, fill it in later *)
+            (i, None)
     ) types
 
 
@@ -98,17 +120,19 @@ let op_stack_delta op =
     | OpStore _ -> -1
     | OpLoad _ -> 1
     | OpReturn _ -> -1
-    | _ -> raise (Fail "TODO: op_stack_delta")
+    | _ -> raise (Fail ("TODO: stack_delta " ^ (JPrint.jopcode op)))
 
+
+(* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
 let rec sliding_pairs (l: 'a list) =
     match l with
     | a :: [b] -> [(a, b)]
     | a :: (b :: rest) -> (a, b) :: (sliding_pairs rest)
-    | _ -> raise (Fail "Unreachable?")
+    | _ -> []
 
-
+(* block_starts must be in accending order *)
 let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
-    let block_ranges = sliding_pairs (List.append block_starts [Array.length code]) in
+    let block_ranges = sliding_pairs (List.concat [[0]; block_starts; [Array.length code]]) in
     let block_comptime_safe start last =
         (* printf "block start=%d last=%d" start last; *)
         let (_, res, stack) = Array.fold_left (fun (index, safe, stack) op -> 
@@ -123,6 +147,7 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
 (* builder must be pointing at entry block already *)
 type rtstack = { arr: llvalue; count: llvalue; arr_ty: lltype }
 
+(*
 let _stack_init ctx code = 
     let intty = i32_type ctx.context in
     let arr_ty = array_type intty (code.c_max_stack) in 
@@ -155,19 +180,24 @@ let stack_pop ctx stack =
     let v = build_load intty prev_ptr "popped" ctx.builder in 
     let _ = build_store new_count stack.count ctx.builder in 
     v
-
-
+*)
 
 let load_local ctx i (locals: localmap) = 
     let intty = i32_type ctx.context in
-    let local_ptr = Hashtbl.find locals i in
-    build_load intty local_ptr "" ctx.builder
+    let local = Hashtbl.find locals i in
+    match local with
+    | Mut ptr -> build_load intty ptr "" ctx.builder
+    | FinalArg v -> v
+    | None -> raise (Fail "load_local None")
 
 let store_local ctx i (locals: localmap) v = 
-    let local_ptr = Hashtbl.find locals i in
+    let local_ptr = match Hashtbl.find locals i with
+        | Mut ptr -> ptr
+        | (FinalArg _) | None -> raise (Fail "try store FinalArg local") in
     let _ = build_store v local_ptr ctx.builder in 
     ()
     
+(*
 let _push_load_local ctx stack i (locals: localmap) = 
     stack_push ctx stack (load_local ctx i locals)
 
@@ -179,12 +209,19 @@ let _stack_add ctx stack =
     let b = stack_pop ctx stack in
     let c = build_add a b "" ctx.builder in
     stack_push ctx stack c
+*)
 
 (* store function arguments in local variable slots. Builder must already be pointing to the entry block*)
 let store_arguments ctx (locals: localmap) func = 
     let _ = Array.fold_left (fun i arg -> 
-        let local_ptr = Hashtbl.find locals i in
-        let _ = build_store arg local_ptr ctx.builder in 
+        let local = Hashtbl.find locals i in
+        (match local with
+        | Mut ptr -> 
+            let _ = build_store arg ptr ctx.builder in 
+            ()
+        | FinalArg _ -> raise (Fail "unreachable")
+        | None -> 
+            Hashtbl.replace locals i (FinalArg arg));
         i + 1
     ) 0 (params func) in
     ()
@@ -229,7 +266,7 @@ let convert_method ctx code sign =
         | OpReturn _ty -> 
             let _ = build_ret (List.hd compstack) ctx.builder in
             drop_fst compstack
-        | _ -> compstack in
+        | _ -> raise (Fail ("TODO: emit_op " ^ JPrint.jopcode op)) in
     
     let _ = Array.fold_left
     (fun (stack, index) op ->
@@ -273,7 +310,7 @@ let emit_method ctx m =
 
 
 let () = 
-    let fname = ["add"; "math"] in
+    let fname = ["add"; "math"; "add_mut"] in
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     

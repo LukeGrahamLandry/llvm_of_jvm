@@ -11,17 +11,22 @@ public class OpTest {
         return a + b;
     }
 
+    public static int math(int a, int b, int c) {
+        // 3 2 1 -> 6
+        return (((a + b) - c) * a) / b;
+    }
+
+    public static int add_mut(int a, int b) {
+        a += b;
+        return a;
+    }
+
     public static int max(int a, int b) {
         if (a > b) {
             return a;
         } else {
             return b;
         }
-    }
-
-    public static int math(int a, int b, int c) {
-        // 3 2 1 -> 6
-        return (((a + b) - c) * a) / b;
     }
 
     public static int redundant(int a) {
