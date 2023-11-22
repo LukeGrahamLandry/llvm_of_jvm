@@ -1,4 +1,18 @@
-## Whats in java bytecode
+## comptime stack
+
+So currently it seems to work but I'm just emitting code for all the stack management stuff at runtime. 
+So my 1 line add function becomes 40 lines of llvm ir (instead of the 1 it should be). 
+LLVM can probably just fix it on its own but that's boring and the insanity makes it hard to debug my code. 
+In this case, its obvious the stack book-keeping can be done at compile time to figure out how the data moves between instructions and then just generate code without a bunch of reduntant stuff. 
+The scary thing is what happens when the code branches? Are different basic blocks allowed to leave different things 
+on the stack and then converge and read it like a phi node? 
+I guess I need to check if a basic block changes the size of the stack or ever goes below where it started and fall back to doing it at runtime. 
+I'm hoping the stack promises to be the same height before and after each statement like in Crafting Interpreters. 
+
+I've been agressivly writing type annotations cause i find it hard to tell what's going on but 
+I figured out how to turn on the inlay type hints in vscode. It does seem to struggle with The Data Type Formerly Known As Enums sometimes tho.
+
+## Whats in java bytecode (Nov 21)
 
 - https://en.wikipedia.org/wiki/List_of_Java_bytecode_instructions
 
@@ -19,8 +33,10 @@ Hashtbls are weird, `add` lets you have deuplicates? `replace` is the normal thi
 
 For testing, can use llc to compile the text ir to asm and link that to a c program. 
 `llc -O0 demo.ll && gcc runtime/callit.c demo.S && ./a.out`
+(commands say gcc but its aliased to the clang that knows where apple hides shit in xcode, idk man)
 
-My current derranged stack manipulation does not work when optimised but does work in O0 so I'm doing undefined behaviour somewhere I guess but idk where. 
+My current derranged stack manipulation does not work when optimised but does work in O0 so I'm doing undefined behaviour somewhere I guess but idk where. BUT, if i run clang on it directly instead of llc, it works, even on O2.
+So idk whats with that but im just gonna move on cause i wasted so much time trying to find a logic error in my crazy generated llvm ir. 
 
 ## Reading java bytecode (Nov 20)
 
