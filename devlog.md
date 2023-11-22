@@ -17,6 +17,11 @@ start_pc and length are the lifetimes of the variable. Kinda afraid cause the sp
 
 Hashtbls are weird, `add` lets you have deuplicates? `replace` is the normal thing. 
 
+For testing, can use llc to compile the text ir to asm and link that to a c program. 
+`llc -O0 demo.ll && gcc runtime/callit.c demo.S && ./a.out`
+
+My current derranged stack manipulation does not work when optimised but does work in O0 so I'm doing undefined behaviour somewhere I guess but idk where. 
+
 ## Reading java bytecode (Nov 20)
 
 library confusing choice: jopcode is like a nice ocaml type that has the data you want already parsed out but if you iterate over the opcodes in a method, you get a bunch of OpInvalid for every argument that was in the bytecode and already parsed out, so i guess just skip those? is there a method to only iterate real things instead of eveery byte? 

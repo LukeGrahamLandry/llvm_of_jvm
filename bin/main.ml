@@ -90,8 +90,8 @@ let alloc_locals (ctx: codegen) (func: llvalue) (code: jcode): localmap =
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
     tblmap (fun (i, jvmtype) -> 
-        (* let name = "var" ^ string_of_int i in *)
-        let ptr = build_alloca (lltype_of_jvmtype ctx jvmtype) "" ctx.builder in
+        let name = "var" ^ string_of_int i in
+        let ptr = build_alloca (lltype_of_jvmtype ctx jvmtype) name ctx.builder in
         (i, ptr)
     ) types
 
@@ -102,30 +102,32 @@ let stack_init (ctx: codegen) (code: jcode): rtstack =
     let intty = i32_type ctx.context in
     let arr_ty = array_type intty code.c_max_stack in 
     let zero = const_int intty 0 in 
-    let arr = build_array_alloca arr_ty zero "" ctx.builder in  (* idk what the 0 is *)
-    let count = build_alloca intty "" ctx.builder in
+    let arr = build_array_alloca arr_ty zero "stack" ctx.builder in  (* idk what the 0 is *)
+    let count = build_alloca intty "count.addr" ctx.builder in
     let _ = build_store zero count ctx.builder in 
     { arr; count; arr_ty }
 
 let stack_push (ctx: codegen) (stack: rtstack) (v: llvalue) = 
     let intty = i32_type ctx.context in
-    let old_count = build_load intty stack.count "" ctx.builder in
-    let indices = Array.of_list [old_count] in
-    let next_ptr = build_gep stack.arr_ty stack.arr indices "" ctx.builder in
+    let old_count = build_load intty stack.count "old_count" ctx.builder in
+    let zero = const_int intty 0 in 
+    let indices = Array.of_list [zero; old_count] in
+    let next_ptr = build_gep stack.arr_ty stack.arr indices "push.addr" ctx.builder in
     let _ = build_store v next_ptr ctx.builder in 
     let one = const_int intty 1 in
-    let new_count = build_add old_count one "" ctx.builder in
+    let new_count = build_add old_count one "new_count" ctx.builder in
     let _ = build_store new_count stack.count ctx.builder in 
     ()
 
 let stack_pop (ctx: codegen) (stack: rtstack): llvalue = 
     let intty = i32_type ctx.context in
-    let old_count = build_load intty stack.count "" ctx.builder in
-    let indices = Array.of_list [old_count] in
-    let next_ptr = build_gep stack.arr_ty stack.arr indices "" ctx.builder in
-    let v = build_load intty next_ptr "" ctx.builder in 
+    let old_count = build_load intty stack.count "old_count" ctx.builder in
     let one = const_int intty 1 in
-    let new_count = build_sub old_count one "" ctx.builder in
+    let new_count = build_sub old_count one "new_count" ctx.builder in
+    let zero = const_int intty 0 in 
+    let indices = Array.of_list [zero; new_count] in
+    let prev_ptr = build_gep stack.arr_ty stack.arr indices "pop.addr" ctx.builder in
+    let v = build_load intty prev_ptr "popped" ctx.builder in 
     let _ = build_store new_count stack.count ctx.builder in 
     v
 
@@ -148,7 +150,17 @@ let stack_add ctx stack =
     let c = build_add a b "" ctx.builder in
     stack_push ctx stack c
 
-let convert_method (ctx: codegen) (code: jcode) (func: llvalue) = 
+(* store function arguments in local variable slots. Builder must already be pointing to the entry block*)
+let store_arguments ctx (locals: localmap) (func: llvalue) = 
+    let _ = Array.fold_left (fun i arg -> 
+        let local_ptr = Hashtbl.find locals i in
+        let _ = build_store arg local_ptr ctx.builder in 
+        i + 1
+    ) 0 (params func) in
+    ()
+
+let convert_method (ctx: codegen) (code: jcode) (sign: method_signature) = 
+    let func = declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module in
     printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals;
     
     let block_positions = find_basic_blocks code.c_code in
@@ -157,6 +169,7 @@ let convert_method (ctx: codegen) (code: jcode) (func: llvalue) =
     (* let _blocks = init_basic_blocks ctx func block_positions in *)
     let locals = alloc_locals ctx func code in
     let working_stack = stack_init ctx code in
+    store_arguments ctx locals func;
     let _ = Array.fold_left
     (fun index op ->
         let _ = match op with
@@ -179,12 +192,11 @@ let emit_method (ctx: codegen) (m: jcode jmethod) =
     match m with
     | AbstractMethod _ -> raise (Fail "TODO: AbstractMethod")
     | ConcreteMethod func ->
-        let llfunc = declare_function (ms_name func.cm_signature) (llfunc_type ctx func.cm_signature) ctx.the_module in
         (match func.cm_implementation with
             | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode llfunc
+                    convert_method ctx jcode func.cm_signature
         ) 
 
 let () = 
