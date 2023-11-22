@@ -29,3 +29,10 @@ setup.log
 _opam/
 
 *.class
+*.dSYM
+*.out
+out
+.vscode
+.DS_Store
+*.s
+*.ll

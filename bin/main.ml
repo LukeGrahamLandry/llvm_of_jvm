@@ -3,7 +3,7 @@ open Javalib_pack
 open Javalib
 open JBasics
 open JCode
-open Printf
+(* open Printf *)
 
 exception Fail of string
 
@@ -100,11 +100,11 @@ type rtstack = { arr: llvalue; count: llvalue; arr_ty: lltype }
 
 let stack_init (ctx: codegen) (code: jcode): rtstack = 
     let intty = i32_type ctx.context in
-    let arr_ty = array_type intty code.c_max_stack in 
+    let arr_ty = array_type intty (code.c_max_stack) in 
     let zero = const_int intty 0 in 
     let arr = build_array_alloca arr_ty zero "stack" ctx.builder in  (* idk what the 0 is *)
     let count = build_alloca intty "count.addr" ctx.builder in
-    let _ = build_store zero count ctx.builder in 
+    let _ = build_store (const_int intty 0) count ctx.builder in 
     { arr; count; arr_ty }
 
 let stack_push (ctx: codegen) (stack: rtstack) (v: llvalue) = 
@@ -161,11 +161,11 @@ let store_arguments ctx (locals: localmap) (func: llvalue) =
 
 let convert_method (ctx: codegen) (code: jcode) (sign: method_signature) = 
     let func = declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module in
-    printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals;
+    (* printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals; *)
     
-    let block_positions = find_basic_blocks code.c_code in
-    print_string "Basic block indices: ";
-    List.iter (printf "%d, ") block_positions;
+    let _block_positions = find_basic_blocks code.c_code in
+    (* print_string "Basic block indices: "; *)
+    (* List.iter (printf "%d, ") block_positions; *)
     (* let _blocks = init_basic_blocks ctx func block_positions in *)
     let locals = alloc_locals ctx func code in
     let working_stack = stack_init ctx code in
@@ -179,13 +179,13 @@ let convert_method (ctx: codegen) (code: jcode) (sign: method_signature) =
         | OpReturn _ty -> let _ = build_ret (stack_pop ctx working_stack) ctx.builder in ()
         | _ -> () in
 
-        printf "%d.  " index;
-        print_endline (JPrint.jopcode op);
+        (* printf "%d.  " index; *)
+        (* print_endline (JPrint.jopcode op); *)
         index + 1
     ) 0 code.c_code in
 
-    printf "\nlocal count: %d\n" (Hashtbl.length locals);
-    print_endline "\n================";
+    (* printf "\nlocal count: %d\n" (Hashtbl.length locals); *)
+    (* print_endline "\n================"; *)
     ()
 
 let emit_method (ctx: codegen) (m: jcode jmethod) = 
@@ -199,20 +199,24 @@ let emit_method (ctx: codegen) (m: jcode jmethod) =
                     convert_method ctx jcode func.cm_signature
         ) 
 
+
 let () = 
+    let fname = Array.get Sys.argv 1 in
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
-    print_endline "Hello, World!";
+    (* print_endline "Hello, World!"; *)
     let path = class_path "./java" in
-    let cls = get_class path (make_cn "Hello") in
+    let cls = get_class path (make_cn "OpTest") in
     let methods = get_methods cls in
     let _ = MethodMap.map (fun m ->
-        print_endline "\n";
-        print_endline (JPrint.method_signature (get_method_signature m));
-        let _ = emit_method ctx m in
-        m
+        let current_fname = ms_name (get_method_signature m) in
+            if current_fname = fname then 
+                (* print_endline "\n";
+                print_endline (JPrint.method_signature (get_method_signature m)); *)
+                let _ = emit_method ctx m in
+                ()
         ) methods in
-    print_endline "hi";
+    (* print_endline "hi"; *)
     let code = string_of_llmodule ctx.the_module in
     print_endline code;

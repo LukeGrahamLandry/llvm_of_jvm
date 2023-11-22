@@ -1,4 +1,4 @@
-public class Hello {
+public class OpTest {
     // int d;
     // public Hello(int e) {
     //     this.d = add(e, 1);
@@ -17,5 +17,24 @@ public class Hello {
         } else {
             return b;
         }
+    }
+
+    public static int redundant(int a) {
+        int b = 0;
+        if (a == 5) {
+            b = 1;
+        } else {
+            b = 2;
+        }
+        return b;
+    }
+
+    public static int loop(int a) {
+        int b = 0;
+        while (a < 10) {
+            a -= 1;
+            b += a;
+        }
+        return b;
     }
 }
