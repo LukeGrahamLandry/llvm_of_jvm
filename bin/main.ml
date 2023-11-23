@@ -44,21 +44,26 @@ let llfunc_type ctx sign =
     in
     function_type ret arg_types
 
-let remove_duplicates l = 
-    List.fold_left (fun ll next -> 
-        if List.exists ((=) next) ll then ll else next :: ll
-    ) [] l
-    
 (* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. *)
 let find_basic_blocks (code: jopcode array): int list =
-    remove_duplicates (fst (Array.fold_left
+    let rec add_target l i = 
+        if List.exists ((=) i) l then l else 
+            let target_fcmp = match Array.get code i with | (OpCmp _) -> true | _ -> false in
+            let next_if = match Array.get code (i + 1) with | (OpIf _) -> true | _ -> false in
+            let target_if = match Array.get code i with | (OpIf _) -> true | _ -> false in
+            let prev_fcmp = i != 0 && match Array.get code (i - 1) with | (OpCmp _) -> true | _ -> false in
+            if target_if && prev_fcmp then raise (Fail "Never jump directly to OpIf after fcmp");
+            if target_fcmp && next_if then (add_target l (i + 1)) else i :: l
+        in
+
+    (fst (Array.fold_left
         (fun (blocks, index) op ->
             let new_blocks = match op with
             | OpIf (_, i) 
             | OpIfCmp (_, i) (* conditional jump can fall through. represent that as jumping to the next instruction *)
-                -> (index + 1) :: (index + i) :: blocks
+                -> add_target (add_target blocks (index + i)) (index + 1) 
             | OpGoto i 
-                -> index + i :: blocks
+                -> add_target blocks (index + i)
             | _ -> blocks in
             (new_blocks, index + 1)
         ) ([0], 0) code))
@@ -225,7 +230,10 @@ let emit_const ctx (v: jconst): llvalue =
     match v with
     | `Int n -> const_int (i32_type ctx.context) (Int32.to_int n)
     | (`Byte n) | (`Short n) -> const_int (i32_type ctx.context) n
-    | _ -> raise (Fail "TODO: emit_const non-int")
+    | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
+    | `Float n -> const_float (float_type ctx.context) n
+    | `Double n -> const_float (double_type ctx.context) n
+    | _ -> raise (Fail "TODO: emit_const other types")
 
 let assert_empty l = if not (List.length l == 0) then raise (Fail "Expected list to be empty") else l
 
@@ -236,6 +244,28 @@ let is_float ty =
 
 let int_or_float ty if_int if_float = 
     if is_float ty then if_float else if_int
+
+let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t = 
+    match fcmpkind with
+    | `L -> raise (Fail "Unreachable")
+    | `FL | `DL -> 
+        (match icmpkind with
+        | `Eq -> Oeq
+        | `Ne -> One
+        | `Lt -> Olt
+        | `Ge -> Oge 
+        | `Gt -> Ogt
+        | `Le -> Ole
+        | `Null | `NonNull -> raise (Fail "No fcmp Null/NonNull"))
+    | `FG | `DG -> 
+        (match icmpkind with
+        | `Eq -> Ueq
+        | `Ne -> Une
+        | `Lt -> Ult
+        | `Ge -> Uge 
+        | `Gt -> Ugt
+        | `Le -> Ule
+        | `Null | `NonNull -> raise (Fail "No fcmp Null/NonNull"))
 
 let convert_method ctx code current_sign funcmap = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
@@ -249,7 +279,7 @@ let convert_method ctx code current_sign funcmap =
     let first = Hashtbl.find basic_blocks 0 in
     let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
 
-    let emit_op ctx (compstack: llvalue list) op index: llvalue list = 
+    let emit_op ctx (compstack: llvalue list) op index prev_op: llvalue list = 
         (match Hashtbl.find_opt basic_blocks index with
         | Some bb -> 
             let current = insertion_block ctx.builder in
@@ -283,11 +313,24 @@ let convert_method ctx code current_sign funcmap =
         | OpIf (kind, offset) -> 
             let true_block = Hashtbl.find basic_blocks (index + offset) in
             let false_block = Hashtbl.find basic_blocks (index + 1) in
-            let a = List.nth compstack 0 in
-            let b = const_int (i32_type ctx.context) 0 in
-            let c = build_icmp (intcmp kind) b a "" ctx.builder in
+
+            let (c, stack) = (match prev_op with
+            | Some (OpCmp `L) -> (* Comparing longs is just a normal integer compare in llvm *)
+                let a = List.nth compstack 0 in
+                let b = List.nth compstack 1 in
+                (build_icmp (intcmp kind) b a "" ctx.builder), (drop_fst (drop_fst compstack))
+            | Some (OpCmp fkind) -> (* This is actually a (2) floats compare. *)
+                let flag = fcmp_flag fkind kind in 
+                let a = List.nth compstack 0 in
+                let b = List.nth compstack 1 in
+                (build_fcmp flag b a "" ctx.builder), (drop_fst (drop_fst compstack))
+            | _ -> (* This is just a normal integer compare to zero. *)
+                let a = List.nth compstack 0 in
+                let b = const_int (i32_type ctx.context) 0 in
+                (build_icmp (intcmp kind) b a "" ctx.builder), (drop_fst compstack) 
+            ) in
             let _ = build_cond_br c true_block false_block ctx.builder in
-            assert_empty (drop_fst compstack)
+            assert_empty stack
         | OpGoto offset -> 
             let bb = Hashtbl.find basic_blocks (index + offset) in
             let _ = build_br bb ctx.builder in
@@ -313,6 +356,11 @@ let convert_method ctx code current_sign funcmap =
                 ) (compstack, []) (ms_args target_sign) in
             let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
             if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
+
+        | (OpCmp _ ) ->   (* really this produces a value but instead, use it as a modifier to the opif *)
+            (match (Array.get code.c_code (index + 1)) with
+            | (OpIf _) -> compstack 
+            | _ -> raise (Fail "OpCmp must be followed by OpIf "))
             
         | OpInvalid -> compstack (* these slots are the arguments to previous instruction *)
         | _ -> raise (Fail ("TODO: emit_op " ^ JPrint.jopcode op))
@@ -320,10 +368,10 @@ let convert_method ctx code current_sign funcmap =
         in
     
     let _ = Array.fold_left
-    (fun (stack, index) op ->
-        let new_stack = emit_op ctx stack op index in
-        (new_stack, index + 1)
-    ) ([], 0) code.c_code in
+    (fun (stack, index, prev_op) op ->
+        let new_stack = emit_op ctx stack op index prev_op in
+        (new_stack, index + 1, (Some op))
+    ) ([], 0, None) code.c_code in
 
     ()
 

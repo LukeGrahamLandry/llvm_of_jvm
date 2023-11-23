@@ -80,6 +80,14 @@ public class OpTest {
     //     return c;
     // }
 
+    public static float ffmax(float a, float b) {
+        if (a > b) {
+            return a;
+        } else {
+            return b;
+        }
+    }
+
     public static int fcmp_normal(float a, float b) {
         int c = 0;
         if (a == b) c += 1;
@@ -94,5 +102,12 @@ public class OpTest {
         if (a == b) return 0;
         if (a > b) return 1;
         return -1;
+    }
+
+    public static long longs(long a, long b) {
+        long c = a + b;
+        c *= 2;
+        if (c < 0) return 0;
+        return c;
     }
 }

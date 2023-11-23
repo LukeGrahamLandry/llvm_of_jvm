@@ -14,6 +14,8 @@ I wonder if an fcmp is ~always~ followed by an ifcmp. Also wonder if you ~never~
 an ifcmp that's after an fcmp (maybe that's implied by stack_comptime_safe). 
 Then you could just see any jump that targets an fcmp as actually targeting the next instruction 
 and treat ifcmp as having its type modified by the previous instruction if its an fcmp. 
+Even writing a function that returns exactly the value of an fcmp doesn't just generate one fcmp so maybe its true. 
+Maybe it even works out without messing with stack_delta because you just have it think OpIf and fcmp both consume 1 when really its OpIf consuming 2 when the previous was an fcmp. 
 
 
 LLvm docs say "Ordered means that neither operand is a QNAN while unordered means that either operand may be a QNAN". 

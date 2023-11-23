@@ -13,7 +13,10 @@ int short_circuit_or(int a, int b);
 int short_circuit_and(int a, int b);
 float fadd(float a, float b);
 float fmath(float a, float b, float c);
-int fcmp_normal(float a, float b)
+int fcmp_normal(float a, float b);
+float ffmax(float a, float b);
+int just_fcmp(float a, float b);
+long longs(long a, long b);
 
 int main() {
     assert(add(1, 2) == 3);
@@ -43,7 +46,14 @@ int main() {
     assert(fadd(1.5, -0.5) == 1.0);
     assert(fadd(1.5, 2.5) == 4);
     assert(fmath(3, 2, 1) == 6);
-    assert(fcmp_normal(1, 1.5) == 1);
+    assert(ffmax(1, 2) == 2);
+    assert(ffmax(5, -2) == 5);
+    assert(just_fcmp(1, 0) == 1);
+    assert(just_fcmp(1, 2) == -1);
+    assert(just_fcmp(1, 1) == 0);
+    assert(fcmp_normal(1, 1) == 1);
     assert(fcmp_normal(5.5, 1) == 2);
     assert(fcmp_normal(-2.2, 5) == -2);
+    assert(longs(1, 2) == 6);
+    assert(longs(1, -2) == 0);
 }
