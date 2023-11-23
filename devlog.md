@@ -1,3 +1,31 @@
+## other primitive types (Nov 23)
+
+Math is easy, just use the right llvm builder depending on the type. 
+
+Unfortunate that bytecode doesn't have ifcmp on floats in the same way. 
+fcmp returns a value that i assume it will generally jump on immediately after. 
+So either 
+    - I produce that value and do a double jump OR 
+    - i have to notice that pair of instructions and emit them as one. 
+But if I try to be clever and do the second thing it makes jumps a bit more confusing. 
+Because jumping to that would be to the fcmp but jumping away is the ifcmp so my current 
+way of spliting up blocks would make two. So treating two ops as one instruction isn't elegant. 
+I wonder if an fcmp is ~always~ followed by an ifcmp. Also wonder if you ~never~ jump to 
+an ifcmp that's after an fcmp (maybe that's implied by stack_comptime_safe). 
+Then you could just see any jump that targets an fcmp as actually targeting the next instruction 
+and treat ifcmp as having its type modified by the previous instruction if its an fcmp. 
+
+
+LLvm docs say "Ordered means that neither operand is a QNAN while unordered means that either operand may be a QNAN". 
+Does that mean 
+    - those are preconditions the instruction assumes OR
+    - ordered alwasy returns false if there's a NAN and unordered always returns true if there's a NAN?
+I hope the second one because then it matches with the bytecode fcmpg vs fcmpl. 
+
+Also a little intimidating is it looks like the ternary operator pushes different things to the stack on each branch and then rejoins. Which it seems like my stack_comptime_safe isn't checking so have to do further invenstigation there 
+once this works. Actually problem was previously assuming that Cmp was stack-2 but its -1 cause returns so now
+at least stack_comptime_safe works and catches the problem early.  
+
 ## Function calls (Nov 22)
 
 Functions receive arguments as locals (already handled) and they pass arguments by putting them on the stack before the call instruction. 
@@ -8,7 +36,7 @@ When you `append_block` you give it the function value to add to so seems its fi
 there's no global current function that's the last you declared. 
 What's the difference between `declare_function` and `define_function`? Maybe internal defined later vs external to be imported later by the linker? 
 
-Short circuiting for `or` is fine because it just becomes normal operations but somehow `and` isnt fine and llvm complains about an empty block. 
+Short circuiting for `or` is fine because it just becomes normal operations but somehow `and` isnt fine and llvm complains about an empty block. Giving the blocks names based on thier opcode index so its easy to compare to the bytecode from javap. Two for index 12? Just needed to remove duplicates from the list of instructions to create blocks for. I was making a new block for each time an instruction was seen as a jump target. 
 
 ## Jumping around (Nov 22)
 

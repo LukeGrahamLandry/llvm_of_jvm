@@ -24,8 +24,6 @@ let lltype_of_basic ctx (basic: java_basic_type) =
         | `Double -> double_type
         ) ctx.context
 
-
-
 let lltype_of_valuetype ctx ty = 
     match ty with
     | TObject _ -> raise (Fail "TODO: TObject")
@@ -46,9 +44,14 @@ let llfunc_type ctx sign =
     in
     function_type ret arg_types
 
+let remove_duplicates l = 
+    List.fold_left (fun ll next -> 
+        if List.exists ((=) next) ll then ll else next :: ll
+    ) [] l
+    
 (* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. *)
 let find_basic_blocks (code: jopcode array): int list =
-    fst (Array.fold_left
+    remove_duplicates (fst (Array.fold_left
         (fun (blocks, index) op ->
             let new_blocks = match op with
             | OpIf (_, i) 
@@ -58,13 +61,13 @@ let find_basic_blocks (code: jopcode array): int list =
                 -> index + i :: blocks
             | _ -> blocks in
             (new_blocks, index + 1)
-        ) ([0], 0) code)
+        ) ([0], 0) code))
 
 type blockmap = (int, llbasicblock) Hashtbl.t
-let init_basic_blocks ctx func (blocks: int list): blockmap = 
-    let pairs = List.map (fun index -> (index, (append_block ctx.context "" func))) blocks in
-    Hashtbl.of_seq (List.to_seq pairs)
 
+let init_basic_blocks ctx func (blocks: int list): blockmap = 
+    let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ string_of_int index) func))) blocks in
+    Hashtbl.of_seq (List.to_seq pairs)
 
 type localtypemap = (int, jvm_type) Hashtbl.t
 let find_local_types (code: jopcode array): localtypemap =
@@ -90,7 +93,6 @@ let count_local_stores (code: jopcode array) =
 
 let tblmap f m = Hashtbl.of_seq (Seq.map f (Hashtbl.to_seq m))
 
-
 let lltype_of_jvmtype ctx (ty: jvm_type) = 
     match ty with
     | `Object -> pointer_type ctx.context
@@ -103,7 +105,8 @@ let lltype_of_jvmtype ctx (ty: jvm_type) =
 type argplace = 
     FinalArg of llvalue (* direct value. must never be stored to. *) 
     | Mut of llvalue (* pointer to stack slot*)
-type localmap = (int, argplace) Hashtbl.t
+type localinfo = { place: argplace; ty: lltype; }
+type localmap = (int, localinfo) Hashtbl.t
 
 let args_slotcount sign = 
     List.fold_left (fun acc ty -> acc + (slotcount_for ty)) 0 (ms_args sign)
@@ -127,20 +130,23 @@ let alloc_locals ctx func code sign: localmap =
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
     tblmap (fun (i, jvmtype) -> 
+        let ty = lltype_of_jvmtype ctx jvmtype in
         let stores = Option.default 0 (Hashtbl.find_opt stores i) in
-        if stores > 0 then 
+        let place = if stores > 0 then 
             let name = "var" ^ string_of_int i in
-            let ptr = build_alloca (lltype_of_jvmtype ctx jvmtype) name ctx.builder in
+            let ptr = build_alloca ty name ctx.builder in
             (match Hashtbl.find_opt arg_locals i with
             | Some ssa -> (* its an argument. copy it to its stack slot*)
                 let _ = build_store ssa ptr ctx.builder in 
                 ()
             | None -> () (* it's not an argument. no initial value. (TODO: zero?)*)
             );
-            (i, Mut ptr)
+            Mut ptr
         else (* if it's never stored, it must be a function argument *)
             let ssa = Hashtbl.find arg_locals i in
-            (i, FinalArg ssa)
+            FinalArg ssa 
+        in
+        (i, { place; ty; })
     ) types
 
 
@@ -150,7 +156,8 @@ let op_stack_delta op =
     | OpStore _ -> -1
     | (OpLoad _) | (OpConst _) -> 1
     | OpReturn _ -> -1
-    | (OpCmp _) | (OpIfCmp _) -> -2
+    | (OpCmp _) -> -1 (* fcmp takes two but returns a value *)
+    | (OpIfCmp _) -> -2
     | OpIf _ -> -1 (* comparing to zero *)
     | (OpIInc _) -> 0
     | OpInvoke ((`Static _), sign) -> 
@@ -166,9 +173,7 @@ let rec sliding_pairs (l: 'a list) =
     | a :: (b :: rest) -> (a, b) :: (sliding_pairs rest)
     | _ -> []
 
-(* block_starts must be in accending order. 
-   It seems javac doesn't generate code that would return false here which is very convient. *)
-
+(* It seems javac doesn't generate code that would return false here which is very convient. *)
 let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     let starts = List.sort compare block_starts in
     let block_ranges = sliding_pairs (List.concat [starts; [Array.length code]]) in
@@ -183,26 +188,23 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     List.fold_left (fun prev (start, last) -> prev && (block_comptime_safe start last)) (true) block_ranges 
 
 let load_local ctx i (locals: localmap) = 
-    let intty = i32_type ctx.context in
     let local = Hashtbl.find locals i in
-    match local with
-    | Mut ptr -> build_load intty ptr "" ctx.builder
+    match local.place with
+    | Mut ptr -> build_load local.ty ptr "" ctx.builder
     | FinalArg v -> v
 
 let store_local ctx i (locals: localmap) v = 
-    let local_ptr = match Hashtbl.find locals i with
+    let local_ptr = match (Hashtbl.find locals i).place with
         | Mut ptr -> ptr
         | (FinalArg _) -> raise (Fail "try store FinalArg local") in
     let _ = build_store v local_ptr ctx.builder in 
     ()
 
-
 let drop_fst l = 
     match l with 
-    | [] -> []
+    | [] -> raise (Fail "drop_fst empty")
     | _ :: rest -> rest
     
-
 let bin_op (f: llvalue -> llvalue -> llvalue) compstack = 
     let a = List.nth compstack 0 in
     let b = List.nth compstack 1 in
@@ -227,9 +229,16 @@ let emit_const ctx (v: jconst): llvalue =
 
 let assert_empty l = if not (List.length l == 0) then raise (Fail "Expected list to be empty") else l
 
+let is_float ty = 
+    match ty with
+    | `Int2Bool | `Long -> false
+    | `Float | `Double -> true
+
+let int_or_float ty if_int if_float = 
+    if is_float ty then if_float else if_int
+
 let convert_method ctx code current_sign funcmap = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
-    (* printf "max stack size: %d. max locals: %d\n"  code.c_max_stack code.c_max_locals; *)
     
     let block_positions = find_basic_blocks code.c_code in
     if not (stack_comptime_safe block_positions code.c_code)
@@ -259,10 +268,10 @@ let convert_method ctx code current_sign funcmap =
         | OpStore (_, i) -> 
             store_local ctx i locals (List.hd compstack);
             drop_fst compstack
-        | OpAdd _ty -> do_bin build_add
-        | OpSub _ty -> do_bin build_sub
-        | OpMult _ty -> do_bin build_mul
-        | OpDiv _ty -> do_bin build_sdiv
+        | OpAdd ty -> do_bin (int_or_float ty build_add build_fadd)
+        | OpSub ty -> do_bin (int_or_float ty build_sub build_fsub) 
+        | OpMult ty -> do_bin (int_or_float ty build_mul build_fmul) 
+        | OpDiv ty -> do_bin (int_or_float ty build_sdiv build_fdiv) 
         | OpIfCmp (kind, offset) -> 
             let true_block = Hashtbl.find basic_blocks (index + offset) in
             let false_block = Hashtbl.find basic_blocks (index + 1) in
@@ -278,7 +287,7 @@ let convert_method ctx code current_sign funcmap =
             let b = const_int (i32_type ctx.context) 0 in
             let c = build_icmp (intcmp kind) b a "" ctx.builder in
             let _ = build_cond_br c true_block false_block ctx.builder in
-            assert_empty (drop_fst (drop_fst compstack))
+            assert_empty (drop_fst compstack)
         | OpGoto offset -> 
             let bb = Hashtbl.find basic_blocks (index + offset) in
             let _ = build_br bb ctx.builder in
@@ -316,10 +325,7 @@ let convert_method ctx code current_sign funcmap =
         (new_stack, index + 1)
     ) ([], 0) code.c_code in
 
-    (* printf "\nlocal count: %d\n" (Hashtbl.length locals); *)
-    (* print_endline "\n================"; *)
     ()
-
 
 let emit_method ctx m funcmap = 
     match m with
@@ -330,8 +336,7 @@ let emit_method ctx m funcmap =
             | Java code ->
                 let jcode = Lazy.force code in
                     convert_method ctx jcode func.cm_signature funcmap
-        ) 
-
+        )
 
 let forward_declare_method ctx m = 
     match m with
@@ -343,25 +348,21 @@ let forward_declare_method ctx m =
             | Java _ -> declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module 
             in
         func
-
        
 let () = 
-    let fname = ["add"; "math"; "add_mut"; "max"; "ifzero"; "minus_ten_while"; "minus_ten_for"; "add3"; "short_circuit_or"; "short_circuit_and"] in
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
-    (* print_endline "Hello, World!"; *)
     let path = class_path "./java" in
     let cls = get_class path (make_cn "OpTest") in
     let methods = get_methods cls in
     let funcmap = MethodMap.map (forward_declare_method ctx) methods in
 
     let _ = MethodMap.map (fun m ->
-        let current_fname = ms_name (get_method_signature m) in
-            if List.exists ((=) current_fname) fname then 
-                let _ = emit_method ctx m funcmap in
-                ()
+        let name = ms_name (get_method_signature m) in
+        if not (name = "<init>") then 
+            let _ = emit_method ctx m funcmap in
+            ()
         ) methods in
-    (* print_endline "hi"; *)
     let code = string_of_llmodule ctx.the_module in
     print_endline code;

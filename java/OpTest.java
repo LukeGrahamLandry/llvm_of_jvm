@@ -1,18 +1,9 @@
 public class OpTest {
-    // int d;
-    // public Hello(int e) {
-    //     this.d = add(e, 1);
-    //     if (e == 10) {
-    //         this.d = 77;
-    //     }
-    // }
-
     public static int add(int a, int b) {
         return a + b;
     }
 
     public static int math(int a, int b, int c) {
-        // 3 2 1 -> 6
         return (((a + b) - c) * a) / b;
     }
 
@@ -49,7 +40,6 @@ public class OpTest {
     public static int minus_ten_for(int a) {
         int b = 0;
         for (int c=a; c > 10; c--) {
-            a -= 1;
             b += 1;
         }
         return b;
@@ -59,15 +49,50 @@ public class OpTest {
         return add(add(a, b), c);
     }
 
-
     public static int short_circuit_or(int a, int b) {
         if (a == 0 || a == b) return a;
         else return b;
     }
 
-     public static int short_circuit_and(int a, int b) {
+    public static int short_circuit_and(int a, int b) {
         if (a == 1 && b == 2) return a;
         else return b;
     }
 
+    public static float fadd(float a, float b) {
+        return a + b;
+    }
+
+    public static float fmath(float a, float b, float c) {
+        float d = a + b;
+        d -= c;
+        d *= a;
+        return d / b;
+    }
+
+    // public static int fcmp_ternary(float a, float b) {
+    //     int c = 0;
+    //     c += a == b ? 1 : 0;
+    //     c += a < b ? -1 : 0;
+    //     c += a > b ? 1 : 0;
+    //     c += a <= b ? -1 : 0;
+    //     c += a >= b ? 1 : 0;
+    //     return c;
+    // }
+
+    public static int fcmp_normal(float a, float b) {
+        int c = 0;
+        if (a == b) c += 1;
+        if (a < b) c -= 1;
+        if (a > b) c += 1;
+        if (a <= b) c -= 1;
+        if (a >= b) c += 1;
+        return c;
+    }
+
+    public static int just_fcmp(float a, float b) {
+        if (a == b) return 0;
+        if (a > b) return 1;
+        return -1;
+    }
 }

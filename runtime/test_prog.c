@@ -11,6 +11,9 @@ int minus_ten_for(int a);
 int add3(int a, int b, int c);
 int short_circuit_or(int a, int b);
 int short_circuit_and(int a, int b);
+float fadd(float a, float b);
+float fmath(float a, float b, float c);
+int fcmp_normal(float a, float b)
 
 int main() {
     assert(add(1, 2) == 3);
@@ -36,4 +39,11 @@ int main() {
     assert(short_circuit_and(1, 2) == 1);
     assert(short_circuit_and(1, 10) == 10);
     assert(short_circuit_and(10, 2) == 2);
+    assert(fadd(1, 2) == 3);
+    assert(fadd(1.5, -0.5) == 1.0);
+    assert(fadd(1.5, 2.5) == 4);
+    assert(fmath(3, 2, 1) == 6);
+    assert(fcmp_normal(1, 1.5) == 1);
+    assert(fcmp_normal(5.5, 1) == 2);
+    assert(fcmp_normal(-2.2, 5) == -2);
 }

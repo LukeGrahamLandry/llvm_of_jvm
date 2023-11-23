@@ -8,7 +8,7 @@ void run(char* cmd) {
 
 int main() {
     run("javac java/*.java");
-    run("dune exec llvm_of_jvm add > out/test.ll");
+    run("dune exec llvm_of_jvm > out/test.ll");
     run("gcc runtime/test_prog.c out/test.ll -o out/testbin");
     run("./out/testbin");
 }
