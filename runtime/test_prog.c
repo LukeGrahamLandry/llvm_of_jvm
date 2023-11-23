@@ -17,6 +17,8 @@ int fcmp_normal(float a, float b);
 float ffmax(float a, float b);
 int just_fcmp(float a, float b);
 long longs(long a, long b);
+int modulo(int a, int b);
+double doubles(double a, double b);
 
 int main() {
     assert(add(1, 2) == 3);
@@ -56,4 +58,8 @@ int main() {
     assert(fcmp_normal(-2.2, 5) == -2);
     assert(longs(1, 2) == 6);
     assert(longs(1, -2) == 0);
+    assert(modulo(10, 3) == 1);
+    assert(modulo(10, 5) == 0);
+    assert(doubles(1, 2) == 0);
+    assert(doubles(-1, -2) == 6);
 }

@@ -44,7 +44,8 @@ let llfunc_type ctx sign =
     in
     function_type ret arg_types
 
-(* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. *)
+(* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. 
+   The list will have no duplicates. HACK: Jumps to an OpCmp are treated as a jump to the following OpIf instead. *)
 let find_basic_blocks (code: jopcode array): int list =
     let rec add_target l i = 
         if List.exists ((=) i) l then l else 
@@ -157,14 +158,14 @@ let alloc_locals ctx func code sign: localmap =
 
 let op_stack_delta op = 
     match op with
-    | (OpAdd _) | (OpSub _) | (OpMult _) | (OpDiv _) -> -1
+    | (OpAdd _) | (OpSub _) | (OpMult _) | (OpDiv _)| (OpRem _) -> -1
     | OpStore _ -> -1
     | (OpLoad _) | (OpConst _) -> 1
     | OpReturn _ -> -1
     | (OpCmp _) -> -1 (* fcmp takes two but returns a value *)
     | (OpIfCmp _) -> -2
     | OpIf _ -> -1 (* comparing to zero *)
-    | (OpIInc _) -> 0
+    | (OpNeg _) | (OpIInc _) -> 0
     | OpInvoke ((`Static _), sign) -> 
         let ret = if (ms_rtype sign) == None then 0 else 1 in
         ret - args_slotcount sign
@@ -201,7 +202,7 @@ let load_local ctx i (locals: localmap) =
 let store_local ctx i (locals: localmap) v = 
     let local_ptr = match (Hashtbl.find locals i).place with
         | Mut ptr -> ptr
-        | (FinalArg _) -> raise (Fail "try store FinalArg local") in
+        | (FinalArg _) -> raise (Fail "Unreachable: try store FinalArg local") in
     let _ = build_store v local_ptr ctx.builder in 
     ()
 
@@ -209,11 +210,12 @@ let drop_fst l =
     match l with 
     | [] -> raise (Fail "drop_fst empty")
     | _ :: rest -> rest
-    
+
 let bin_op (f: llvalue -> llvalue -> llvalue) compstack = 
+    if List.length compstack < 2 then raise (Fail "Stack underflow on bin_op");
     let a = List.nth compstack 0 in
     let b = List.nth compstack 1 in
-    (* Argument order matters for subtraction and division *)
+    (* Argument order matters for sub/div/rem *)
     (f b a) :: (drop_fst (drop_fst compstack))
 
 let intcmp kind: Llvm.Icmp.t = 
@@ -272,7 +274,7 @@ let convert_method ctx code current_sign funcmap =
     
     let block_positions = find_basic_blocks code.c_code in
     if not (stack_comptime_safe block_positions code.c_code)
-        then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign)));
+        then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign) ^ " [often we dont like (a ? b : c)]"));
 
     let locals = alloc_locals ctx func code current_sign in
     let basic_blocks = init_basic_blocks ctx func block_positions in
@@ -298,10 +300,18 @@ let convert_method ctx code current_sign funcmap =
         | OpStore (_, i) -> 
             store_local ctx i locals (List.hd compstack);
             drop_fst compstack
-        | OpAdd ty -> do_bin (int_or_float ty build_add build_fadd)
+        | OpAdd ty -> do_bin (int_or_float ty build_add build_fadd) (* TODO: test overflow on smaller types *)
         | OpSub ty -> do_bin (int_or_float ty build_sub build_fsub) 
         | OpMult ty -> do_bin (int_or_float ty build_mul build_fmul) 
         | OpDiv ty -> do_bin (int_or_float ty build_sdiv build_fdiv) 
+        | OpRem ty -> do_bin (int_or_float ty build_srem build_frem) (* TODO: test on floats/doubles *)
+        (* TODO: write tests for bitwise ops *)
+        | OpIAnd | OpLAnd -> do_bin build_and 
+        | OpIOr | OpLOr -> do_bin build_or 
+        | OpIXor | OpLXor -> do_bin build_xor
+        | OpIUShr | OpLUShr -> do_bin build_lshr
+        | OpIShr | OpLShr -> do_bin build_ashr
+        | OpIShl | OpLShl -> do_bin build_shl
         | OpIfCmp (kind, offset) -> 
             let true_block = Hashtbl.find basic_blocks (index + offset) in
             let false_block = Hashtbl.find basic_blocks (index + 1) in
@@ -337,7 +347,7 @@ let convert_method ctx code current_sign funcmap =
             assert_empty compstack
         | OpReturn _ty -> 
             let _ = build_ret (List.hd compstack) ctx.builder in
-            (* This will always work because of stack_comptime_safe*)
+            (* This will always work because of stack_comptime_safe *)
             assert_empty (drop_fst compstack)
         | OpConst v -> (emit_const ctx v) :: compstack
         | OpIInc (local_index, v) -> 
@@ -347,6 +357,12 @@ let convert_method ctx code current_sign funcmap =
             store_local ctx local_index locals new_val;
             compstack
 
+        | OpNeg ty -> 
+            let v = List.nth compstack 0 in
+            let neg = int_or_float ty build_neg build_fneg in 
+            let result = neg v "" ctx.builder in
+            result :: drop_fst compstack
+    
         | OpInvoke ((`Static (_ioc, _classname)), target_sign) -> 
             if List.length (ms_args target_sign) > List.length compstack then raise (Fail ("stack underflow calling " ^ (ms_name target_sign)));
             let func_ty = llfunc_type ctx target_sign in
@@ -357,12 +373,14 @@ let convert_method ctx code current_sign funcmap =
             let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
             if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
 
-        | (OpCmp _ ) ->   (* really this produces a value but instead, use it as a modifier to the opif *)
+        | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
             (match (Array.get code.c_code (index + 1)) with
             | (OpIf _) -> compstack 
             | _ -> raise (Fail "OpCmp must be followed by OpIf "))
-            
-        | OpInvalid -> compstack (* these slots are the arguments to previous instruction *)
+
+        | OpInvalid (* these slots are the arguments to previous instruction *)
+        | OpNop -> compstack 
+        | (OpRet _) | (OpJsr _ ) -> raise (Fail ((JPrint.jopcode op) ^ " was deprecated in Java 7 "))
         | _ -> raise (Fail ("TODO: emit_op " ^ JPrint.jopcode op))
 
         in

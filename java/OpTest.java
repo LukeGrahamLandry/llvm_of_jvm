@@ -65,7 +65,7 @@ public class OpTest {
 
     public static float fmath(float a, float b, float c) {
         float d = a + b;
-        d -= c;
+        d += -c;
         d *= a;
         return d / b;
     }
@@ -109,5 +109,16 @@ public class OpTest {
         c *= 2;
         if (c < 0) return 0;
         return c;
+    }
+
+    public static double doubles(double a, double b) {
+        double c = -(a + b);
+        c *= 2;
+        if (c < 0) return 0;
+        return c;
+    }
+
+    public static int modulo(int a, int b) {
+        return a % b;
     }
 }

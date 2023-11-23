@@ -17,7 +17,6 @@ and treat ifcmp as having its type modified by the previous instruction if its a
 Even writing a function that returns exactly the value of an fcmp doesn't just generate one fcmp so maybe its true. 
 Maybe it even works out without messing with stack_delta because you just have it think OpIf and fcmp both consume 1 when really its OpIf consuming 2 when the previous was an fcmp. 
 
-
 LLvm docs say "Ordered means that neither operand is a QNAN while unordered means that either operand may be a QNAN". 
 Does that mean 
     - those are preconditions the instruction assumes OR
@@ -27,6 +26,8 @@ I hope the second one because then it matches with the bytecode fcmpg vs fcmpl.
 Also a little intimidating is it looks like the ternary operator pushes different things to the stack on each branch and then rejoins. Which it seems like my stack_comptime_safe isn't checking so have to do further invenstigation there 
 once this works. Actually problem was previously assuming that Cmp was stack-2 but its -1 cause returns so now
 at least stack_comptime_safe works and catches the problem early.  
+Maybe tho it's still very limited and its only used as exactly a phi instruction so could 
+recognise the pattern and do that. That's scary tho. 
 
 ## Function calls (Nov 22)
 
