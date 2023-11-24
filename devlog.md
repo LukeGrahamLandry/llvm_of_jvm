@@ -1,3 +1,32 @@
+## Static fields (Nov 24)
+
+Native method calls are trivial but need to revisit when I do name mangling. 
+
+
+There's a FieldMap just like for methods. Can easily get the ones that are static. 
+Trying to ive a static field a default value `not stack_comptime_safe in <clinit>`
+Maybe that's a static block trying to set the field? Javap shows: 
+```
+static {};
+    Code:
+       0: iconst_0
+       1: putstatic     #20                 // Field acc:I
+       4: return
+```
+Oh, its just a problem with returning void because stack_delta doesn't check the type. 
+
+Seems like they don't use the optional cf_value for the inititial value of the field. 
+Instead it goes in a static block which shows up as a clinit function (class init?).
+Segfault trying to set_initializer on the global. Use define_global instead of declare_global. 
+
+This seems to work but now I need to call `@"<cl_init>"` which is awkward because c can't refer to that name. 
+objdump does show it in the executable tho. 
+For now just replace special characters in the function names with underscores but you loose the nice property of not being able to conflict with user defined methods. 
+Now need to remember to call `_clinit_` manually for every class that has static fields which is a bit annoying. 
+But convient that now I get `static { ... }` blocks working too for free. 
+
+TODO: is there a way to indicate that a function argument is only an immutable view into a Hashtbl? 
+
 ## other primitive types (Nov 23)
 
 Math is easy, just use the right llvm builder depending on the type. 

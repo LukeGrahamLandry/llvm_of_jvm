@@ -138,9 +138,28 @@ public class OpTest {
         return -1;
     }
 
-    // doesnt work
     public static byte minzero(byte a) {
         if (a < 0) return 0;
         return a;
+    }
+
+    public static native int mul(int a, int b);
+
+    public static int call_native(int a) {
+        return mul(a, 2);
+    }
+
+    public static void do_nothing() {
+        return;
+    }
+
+    public static int acc = 4;
+    public static int inc_static() {
+        acc += 1;
+        return acc;
+    }
+
+    static {
+        acc += 6;
     }
 }

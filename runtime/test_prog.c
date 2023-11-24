@@ -23,6 +23,10 @@ int cast(float a);
 signed char bytes(signed char a, signed char b);
 signed char minzero(signed char a);
 int cmp_zero(int a);
+int call_native(int a);
+int inc_static();
+void do_nothing();
+void _clinit_();  // Static initializer block
 
 int main() {
     assert(add(1, 2) == 3);
@@ -74,4 +78,17 @@ int main() {
     assert(cmp_zero(2) == 1);
     assert(minzero(-5) == 0);
     assert(minzero(5) == 5);
+    assert(call_native(5) == 10);
+    do_nothing();
+
+    _clinit_();
+    assert(inc_static() == 11);
+    assert(inc_static() == 12);
+    assert(inc_static() == 13);
+    
+}
+
+// Imported native
+int mul(int a, int b) {
+    return a * b;
 }

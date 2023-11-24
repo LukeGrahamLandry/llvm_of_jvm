@@ -5,8 +5,13 @@ open JBasics
 open JCode
 (* open Printf *)
 
-exception Fail of string
+(* Semantic messages for exceptions that should not be caught. *)
+exception Panic of string
+let todo msg = raise (Panic ("NOT YET IMPLEMENTED: " ^ msg))
+let illegal msg = raise (Panic ("ILLEGAL INPUT: " ^ msg))
+let unreachable () = raise (Panic "UNREACHABLE") (* needs to take an argument, otherwise its evaluated as an entry point???? *)
 
+(* This kinda represents permission to do imperative stuff with the llvm api. *)
 type codegen = {
     context: llcontext;
     the_module: llmodule;
@@ -26,7 +31,7 @@ let lltype_of_basic ctx (basic: java_basic_type) =
 
 let lltype_of_valuetype ctx ty = 
     match ty with
-    | TObject _ -> raise (Fail "TODO: TObject")
+    | TObject _ -> todo "TObject"
     | TBasic basic -> lltype_of_basic ctx basic
 
 let slotcount_for ty = 
@@ -53,7 +58,7 @@ let find_basic_blocks (code: jopcode array): int list =
             let next_if = match Array.get code (i + 1) with | (OpIf _) -> true | _ -> false in
             let target_if = match Array.get code i with | (OpIf _) -> true | _ -> false in
             let prev_fcmp = i != 0 && match Array.get code (i - 1) with | (OpCmp _) -> true | _ -> false in
-            if target_if && prev_fcmp then raise (Fail "Never jump directly to OpIf after fcmp");
+            if target_if && prev_fcmp then illegal "jumped directly to OpIf after fcmp";
             if target_fcmp && next_if then (add_target l (i + 1)) else i :: l
         in
 
@@ -159,9 +164,12 @@ let alloc_locals ctx func code sign: localmap =
 let op_stack_delta op = 
     match op with
     | (OpAdd _) | (OpSub _) | (OpMult _) | (OpDiv _)| (OpRem _) -> -1
-    | OpStore _ -> -1
-    | (OpLoad _) | (OpConst _) -> 1
-    | OpReturn _ -> -1
+    | (OpStore _) | (OpPutStatic _) -> -1
+    | (OpLoad _) | (OpConst _) | (OpGetStatic _) -> 1
+    | OpReturn ty -> 
+        (match ty with
+        | `Void -> 0
+        | _ -> -1)
     | (OpCmp _) -> -1 (* fcmp takes two but returns a value *)
     | (OpIfCmp _) -> -2
     | OpIf _ -> -1 (* comparing to zero *)
@@ -171,7 +179,7 @@ let op_stack_delta op =
         ret - args_slotcount sign
     | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S -> 0
     | OpInvalid -> 0
-    | _ -> raise (Fail ("TODO: stack_delta " ^ (JPrint.jopcode op)))
+    | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
 (* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
 let rec sliding_pairs (l: 'a list) =
@@ -203,17 +211,17 @@ let load_local ctx i (locals: localmap) =
 let store_local ctx i (locals: localmap) v = 
     let local_ptr = match (Hashtbl.find locals i).place with
         | Mut ptr -> ptr
-        | (FinalArg _) -> raise (Fail "Unreachable: try store FinalArg local") in
+        | (FinalArg _) -> unreachable () in
     let _ = build_store v local_ptr ctx.builder in 
     ()
 
 let drop_fst l = 
     match l with 
-    | [] -> raise (Fail "drop_fst empty")
+    | [] -> illegal "drop_fst empty"
     | _ :: rest -> rest
 
 let bin_op (f: llvalue -> llvalue -> llvalue) compstack = 
-    if List.length compstack < 2 then raise (Fail "Stack underflow on bin_op");
+    if List.length compstack < 2 then illegal "Stack underflow on bin_op";
     let a = List.nth compstack 0 in
     let b = List.nth compstack 1 in
     (* Argument order matters for sub/div/rem *)
@@ -227,7 +235,7 @@ let intcmp kind: Llvm.Icmp.t =
     | `IGe | `Ge -> Sge
     | `IGt | `Gt -> Sgt
     | `ILe | `Le -> Sle
-    | `AEq | `ANe | `Null | `NonNull -> raise (Fail "TODO: cmp ptr")
+    | `AEq | `ANe | `Null | `NonNull -> todo "cmp ptr"
 
 let emit_const ctx (v: jconst): llvalue = 
     match v with
@@ -236,9 +244,20 @@ let emit_const ctx (v: jconst): llvalue =
     | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
     | `Float n -> const_float (float_type ctx.context) n
     | `Double n -> const_float (double_type ctx.context) n
-    | _ -> raise (Fail "TODO: emit_const other types")
+    | _ -> todo "emit_const other types"
 
-let assert_empty l = if not (List.length l == 0) then raise (Fail "Expected list to be empty") else l
+(* TODO: Can I combine this with the above?
+         Maybe don't even need this because its only used for static fields 
+         but they seem to use a static block instead of cf_value*)
+let emit_const2 ctx (v: constant_attribute): llvalue = 
+    match v with
+    | `Int n -> const_int (i32_type ctx.context) (Int32.to_int n)
+    | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
+    | `Float n -> const_float (float_type ctx.context) n
+    | `Double n -> const_float (double_type ctx.context) n
+    | `String _ -> todo "constant string"
+
+let assert_empty l = if not (List.length l == 0) then illegal "Expected list to be empty" else l
 
 let is_float ty = 
     match ty with
@@ -250,7 +269,7 @@ let int_or_float ty if_int if_float =
 
 let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t = 
     match fcmpkind with
-    | `L -> raise (Fail "Unreachable")
+    | `L -> unreachable ()
     | `FL | `DL -> 
         (match icmpkind with
         | `Eq -> Oeq
@@ -259,7 +278,7 @@ let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t =
         | `Ge -> Oge 
         | `Gt -> Ogt
         | `Le -> Ole
-        | `Null | `NonNull -> raise (Fail "No fcmp Null/NonNull"))
+        | `Null | `NonNull -> illegal "fcmp Null/NonNull")
     | `FG | `DG -> 
         (match icmpkind with
         | `Eq -> Ueq
@@ -268,15 +287,15 @@ let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t =
         | `Ge -> Uge 
         | `Gt -> Ugt
         | `Le -> Ule
-        | `Null | `NonNull -> raise (Fail "No fcmp Null/NonNull"))
+        | `Null | `NonNull -> illegal "fcmp Null/NonNull")
 
-let convert_method ctx code current_sign funcmap = 
+let convert_method ctx code current_sign funcmap fieldsmap = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
     let ret_ty = ms_rtype current_sign in
 
     let block_positions = find_basic_blocks code.c_code in
     if not (stack_comptime_safe block_positions code.c_code)
-        then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign) ^ " [often we dont like (a ? b : c)]"));
+        then todo ("use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign) ^ " [often we dont like (a ? b : c)]");
 
     let locals = alloc_locals ctx func code current_sign in
     let basic_blocks = init_basic_blocks ctx func block_positions in
@@ -332,16 +351,18 @@ let convert_method ctx code current_sign funcmap =
             let true_block = Hashtbl.find basic_blocks (index + offset) in
             let false_block = Hashtbl.find basic_blocks (index + 1) in
 
+            let cmp f k =
+                let a = List.nth compstack 0 in
+                let b = List.nth compstack 1 in
+                (f k b a "" ctx.builder), (drop_fst (drop_fst compstack))
+            in
+
             let (c, stack) = (match prev_op with
             | Some (OpCmp `L) -> (* Comparing longs is just a normal integer compare in llvm *)
-                let a = List.nth compstack 0 in
-                let b = List.nth compstack 1 in
-                (build_icmp (intcmp kind) b a "" ctx.builder), (drop_fst (drop_fst compstack))
-            | Some (OpCmp fkind) -> (* This is actually a (2) floats compare. *)
+                cmp build_icmp (intcmp kind)
+            | Some (OpCmp fkind) -> (* This is actually a (2) floats/doubles compare. *)
                 let flag = fcmp_flag fkind kind in 
-                let a = List.nth compstack 0 in
-                let b = List.nth compstack 1 in
-                (build_fcmp flag b a "" ctx.builder), (drop_fst (drop_fst compstack))
+                cmp build_fcmp flag
             | _ -> (* This is just a normal integer compare to zero. *)
                 let b = List.nth compstack 0 in
                 let i32 = i32_type ctx.context in
@@ -357,7 +378,9 @@ let convert_method ctx code current_sign funcmap =
             assert_empty compstack
         | OpReturn _ -> 
             (match ret_ty with
-            | None -> assert_empty compstack
+            | None -> 
+                let _ = build_ret_void ctx.builder in
+                assert_empty compstack
             | (Some (TObject _)) | (Some (TBasic (`Int | `Float | `Double | `Long))) ->
                 let v = List.hd compstack in
                 let _ = build_ret v ctx.builder in
@@ -366,9 +389,9 @@ let convert_method ctx code current_sign funcmap =
                 let stack = (match b with
                 | `Short -> do_cast build_intcast i16_type compstack
                 | `Byte -> do_cast build_intcast i8_type compstack
-                | `Char -> raise (Fail "TODO: what's a char?")
+                | `Char -> todo "what's a char?"
                 | `Bool -> do_cast build_intcast i1_type compstack
-                | _ -> raise (Fail "unreachable")
+                | _ -> unreachable ()
                 ) in
                 let _ = build_ret (List.hd stack) ctx.builder in
                 assert_empty (drop_fst stack))
@@ -402,10 +425,10 @@ let convert_method ctx code current_sign funcmap =
         | OpI2S -> 
             let stack = do_cast build_intcast i16_type compstack in
             do_cast build_sext i32_type stack
-        | OpI2C -> raise (Fail "TODO: what's a char?")
+        | OpI2C -> todo "what's a char?"
 
         | OpInvoke ((`Static (_ioc, _classname)), target_sign) -> 
-            if List.length (ms_args target_sign) > List.length compstack then raise (Fail ("stack underflow calling " ^ (ms_name target_sign)));
+            if List.length (ms_args target_sign) > List.length compstack then illegal ("stack underflow calling " ^ (ms_name target_sign) ^ " from " ^ (ms_name current_sign));
             let func_ty = llfunc_type ctx target_sign in
             let func_value = MethodMap.find target_sign funcmap in 
             let (new_stack, arg_values) = List.fold_left (fun (stack, args) _arg -> 
@@ -417,12 +440,30 @@ let convert_method ctx code current_sign funcmap =
         | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
             (match (Array.get code.c_code (index + 1)) with
             | (OpIf _) -> compstack 
-            | _ -> raise (Fail "OpCmp must be followed by OpIf "))
+            | _ -> illegal "OpCmp must be followed by OpIf")
+
+        | OpGetStatic (_, field_sign) -> (* TODO: multiple classes *)
+            let global = FieldMap.find field_sign fieldsmap in
+            let ptr = (match global.place with
+                | Mut ptr -> ptr
+                | FinalArg _ -> unreachable ()
+                ) in
+            let v = build_load global.ty ptr "" ctx.builder in
+            v :: compstack
+
+        | OpPutStatic (_, field_sign) ->
+            let global = FieldMap.find field_sign fieldsmap in
+            let ptr = (match global.place with
+                | Mut ptr -> ptr
+                | FinalArg _ -> unreachable ()
+                ) in
+            let _ = build_store (List.hd compstack) ptr ctx.builder in
+            drop_fst compstack
 
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
-        | (OpRet _) | (OpJsr _ ) -> raise (Fail ((JPrint.jopcode op) ^ " was deprecated in Java 7 "))
-        | _ -> raise (Fail ("TODO: emit_op " ^ JPrint.jopcode op))
+        | (OpRet _) | (OpJsr _ ) -> illegal ((JPrint.jopcode op) ^ " was deprecated in Java 7.")
+        | _ -> todo ("emit_op " ^ JPrint.jopcode op)
 
         in
     
@@ -434,42 +475,60 @@ let convert_method ctx code current_sign funcmap =
 
     ()
 
-let emit_method ctx m funcmap = 
+let emit_method ctx m funcmap fieldsmap = 
     match m with
-    | AbstractMethod _ -> raise (Fail "TODO: AbstractMethod")
+    | AbstractMethod _ -> todo "AbstractMethod"
     | ConcreteMethod func ->
         (match func.cm_implementation with
             | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode func.cm_signature funcmap
+                    convert_method ctx jcode func.cm_signature funcmap fieldsmap
         )
+
+let str_replace s before after = 
+    String.map (fun c -> if String.contains before c then after else c) s
 
 let forward_declare_method ctx m = 
     match m with
-    | AbstractMethod _ -> raise (Fail "TODO: AbstractMethod")
+    | AbstractMethod _ -> todo "AbstractMethod"
     | ConcreteMethod func ->
         let sign = func.cm_signature in
-        let func = match func.cm_implementation with
-            | Native -> define_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module 
-            | Java _ -> declare_function (ms_name sign) (llfunc_type ctx sign) ctx.the_module 
-            in
-        func
-       
+        let name = str_replace (ms_name sign) "><" '_' in
+        declare_function name (llfunc_type ctx sign) ctx.the_module
+
+let emit_static_field ctx anyfield = 
+    match anyfield with
+    | InterfaceField _ -> todo "interface static field"
+    | ClassField field -> 
+        assert field.cf_static;
+        let ty = lltype_of_valuetype ctx (fs_type field.cf_signature) in
+        let name = fs_name field.cf_signature in (* TODO: include class in name *)
+        let init_val = (match field.cf_value with
+        | None -> const_int ty 0
+        | Some init -> emit_const2 ctx init
+        ) in
+        let v = define_global name init_val ctx.the_module in
+        { place=Mut v; ty }
+
+let emit_class ctx cls = 
+    let methods = MethodMap.filter is_static_method (get_methods cls) in
+    let funcmap = MethodMap.map (forward_declare_method ctx) methods in
+    let static_fields = FieldMap.filter is_static_field (get_fields cls) in
+    let fieldsmap = FieldMap.map (emit_static_field ctx) static_fields in
+
+    let _ = MethodMap.map (fun m ->
+        emit_method ctx m funcmap fieldsmap
+        ) methods in
+    ()
+
 let () = 
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
     let path = class_path "./java" in
     let cls = get_class path (make_cn "OpTest") in
-    let methods = get_methods cls in
-    let funcmap = MethodMap.map (forward_declare_method ctx) methods in
-
-    let _ = MethodMap.map (fun m ->
-        let name = ms_name (get_method_signature m) in
-        if not (name = "<init>") then 
-            let _ = emit_method ctx m funcmap in
-            ()
-        ) methods in
+    emit_class ctx cls;
+    
     let code = string_of_llmodule ctx.the_module in
     print_endline code;
