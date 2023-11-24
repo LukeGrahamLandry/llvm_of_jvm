@@ -121,4 +121,26 @@ public class OpTest {
     public static int modulo(int a, int b) {
         return a % b;
     }
+
+    public static int cast(float a) {
+        return (int) a;
+    }
+
+    public static byte bytes(byte a, byte b) {
+        byte c = (byte) -(a + b);
+        c *= 2;
+        return (byte) c;
+    }
+
+    public static int cmp_zero(int a) {
+        if (a == 0) return 0;
+        if (a > 0) return 1;
+        return -1;
+    }
+
+    // doesnt work
+    public static byte minzero(byte a) {
+        if (a < 0) return 0;
+        return a;
+    }
 }

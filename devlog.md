@@ -29,6 +29,22 @@ at least stack_comptime_safe works and catches the problem early.
 Maybe tho it's still very limited and its only used as exactly a phi instruction so could 
 recognise the pattern and do that. That's scary tho. 
 
+Some of that casting is a bit weird, it seems the operand stack can't hold anything smaller than an int? 
+So the down casting instructions say they truncate to the smaller size and then sign extend back up to an int. 
+By extension, when you return a smaller type, the stack has it as an int. There are different return opcodes for int/float/double/long/void but all the smaller types are converted based on the function signeture "as though by the cast opcode". Which is weird because the java compiler doesn't let you return something that isn't already the right type so it will already be in that range. So idk if they're just being overly specific for no reason or there's some edge case i haven't thought of. 
+- https://docs.oracle.com/javase/specs/jvms/se11/html/jvms-6.html#jvms-6.5.i2b
+- https://docs.oracle.com/javase/specs/jvms/se11/html/jvms-6.html#jvms-6.5.ireturn
+
+Problem with OpIf on smaller int types, it doesn't know the type to produce the zero constant for, just assumes 32 bits. Could do it like the spec where every value on the operand stack has to be a 32 bit integer. 
+But that feels silly when you're doing math on the same type. But then there won't be explicit casts when working with different types because it expects them to just be integers. 
+So maybe inheriting that restriction is easiest since the ISA has that anyway kinda. 
+But really math stuff is probably specified to work as though it was all cast to int and then back only at the very end of the expression. 
+Further thought required when I add tests for overflowing stuff. 
+
+Had a problem with comparisons that i assumed was about sizes somehow but it was actually just that my 
+int OpIf had the operands in the wrong order. Why didn't I notice before, was I just never comparing to zero? 
+Yeah I did longs and doubles but those both use cmp then If so I was wrong about which argument the const zero replaces in the normal case I guess, idk. 
+
 ## Function calls (Nov 22)
 
 Functions receive arguments as locals (already handled) and they pass arguments by putting them on the stack before the call instruction. 

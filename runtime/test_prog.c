@@ -19,6 +19,10 @@ int just_fcmp(float a, float b);
 long longs(long a, long b);
 int modulo(int a, int b);
 double doubles(double a, double b);
+int cast(float a);
+signed char bytes(signed char a, signed char b);
+signed char minzero(signed char a);
+int cmp_zero(int a);
 
 int main() {
     assert(add(1, 2) == 3);
@@ -62,4 +66,12 @@ int main() {
     assert(modulo(10, 5) == 0);
     assert(doubles(1, 2) == 0);
     assert(doubles(-1, -2) == 6);
+    assert(cast(1.5) == 1);
+    assert(bytes(1, 2) == -6);
+    assert(bytes(-1, -2) == 6);
+    assert(cmp_zero(-2) == -1);
+    assert(cmp_zero(0) == 0);
+    assert(cmp_zero(2) == 1);
+    assert(minzero(-5) == 0);
+    assert(minzero(5) == 5);
 }

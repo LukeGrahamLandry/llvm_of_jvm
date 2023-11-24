@@ -169,6 +169,7 @@ let op_stack_delta op =
     | OpInvoke ((`Static _), sign) -> 
         let ret = if (ms_rtype sign) == None then 0 else 1 in
         ret - args_slotcount sign
+    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S -> 0
     | OpInvalid -> 0
     | _ -> raise (Fail ("TODO: stack_delta " ^ (JPrint.jopcode op)))
 
@@ -271,7 +272,8 @@ let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t =
 
 let convert_method ctx code current_sign funcmap = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
-    
+    let ret_ty = ms_rtype current_sign in
+
     let block_positions = find_basic_blocks code.c_code in
     if not (stack_comptime_safe block_positions code.c_code)
         then raise (Fail ("TODO: use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign) ^ " [often we dont like (a ? b : c)]"));
@@ -295,6 +297,12 @@ let convert_method ctx code current_sign funcmap =
         );
 
         let do_bin f = bin_op (fun a b -> f a b "" ctx.builder) compstack in 
+        let do_cast f out s = 
+            let v = List.nth s 0 in
+            let res = f v (out ctx.context) "" ctx.builder in
+            res :: drop_fst s
+        in
+
         match op with
         | OpLoad (_, i) -> load_local ctx i locals :: compstack
         | OpStore (_, i) -> 
@@ -335,8 +343,10 @@ let convert_method ctx code current_sign funcmap =
                 let b = List.nth compstack 1 in
                 (build_fcmp flag b a "" ctx.builder), (drop_fst (drop_fst compstack))
             | _ -> (* This is just a normal integer compare to zero. *)
-                let a = List.nth compstack 0 in
-                let b = const_int (i32_type ctx.context) 0 in
+                let b = List.nth compstack 0 in
+                let i32 = i32_type ctx.context in
+                let b = if type_of b != i32 then build_intcast b i32 "" ctx.builder else b in
+                let a = const_int i32 0 in
                 (build_icmp (intcmp kind) b a "" ctx.builder), (drop_fst compstack) 
             ) in
             let _ = build_cond_br c true_block false_block ctx.builder in
@@ -345,10 +355,23 @@ let convert_method ctx code current_sign funcmap =
             let bb = Hashtbl.find basic_blocks (index + offset) in
             let _ = build_br bb ctx.builder in
             assert_empty compstack
-        | OpReturn _ty -> 
-            let _ = build_ret (List.hd compstack) ctx.builder in
-            (* This will always work because of stack_comptime_safe *)
-            assert_empty (drop_fst compstack)
+        | OpReturn _ -> 
+            (match ret_ty with
+            | None -> assert_empty compstack
+            | (Some (TObject _)) | (Some (TBasic (`Int | `Float | `Double | `Long))) ->
+                let v = List.hd compstack in
+                let _ = build_ret v ctx.builder in
+                assert_empty (drop_fst compstack)
+            | Some (TBasic b) -> 
+                let stack = (match b with
+                | `Short -> do_cast build_intcast i16_type compstack
+                | `Byte -> do_cast build_intcast i8_type compstack
+                | `Char -> raise (Fail "TODO: what's a char?")
+                | `Bool -> do_cast build_intcast i1_type compstack
+                | _ -> raise (Fail "unreachable")
+                ) in
+                let _ = build_ret (List.hd stack) ctx.builder in
+                assert_empty (drop_fst stack))
         | OpConst v -> (emit_const ctx v) :: compstack
         | OpIInc (local_index, v) -> 
             let old_val = load_local ctx local_index locals in
@@ -362,7 +385,25 @@ let convert_method ctx code current_sign funcmap =
             let neg = int_or_float ty build_neg build_fneg in 
             let result = neg v "" ctx.builder in
             result :: drop_fst compstack
-    
+
+        (* TODO: write tests for every type of cast (and every overflow condition). 
+           If I trust that other tests test the basics could write all in java and just return count of successes or whatever *)
+        | OpF2I | OpD2I -> do_cast build_fptosi i32_type compstack
+        | OpF2L | OpD2L -> do_cast build_fptosi i64_type compstack
+        | OpI2F | OpL2F -> do_cast build_sitofp float_type compstack
+        | OpI2D | OpL2D -> do_cast build_sitofp double_type compstack
+        | OpF2D -> do_cast build_fpcast double_type compstack
+        | OpD2F -> do_cast build_fpcast float_type compstack
+        | OpI2L -> do_cast build_sext i64_type compstack
+        | OpL2I -> do_cast build_intcast i32_type compstack
+        | OpI2B -> 
+            let stack = do_cast build_intcast i8_type compstack in
+            do_cast build_sext i32_type stack
+        | OpI2S -> 
+            let stack = do_cast build_intcast i16_type compstack in
+            do_cast build_sext i32_type stack
+        | OpI2C -> raise (Fail "TODO: what's a char?")
+
         | OpInvoke ((`Static (_ioc, _classname)), target_sign) -> 
             if List.length (ms_args target_sign) > List.length compstack then raise (Fail ("stack underflow calling " ^ (ms_name target_sign)));
             let func_ty = llfunc_type ctx target_sign in
