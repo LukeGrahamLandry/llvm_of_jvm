@@ -1,7 +1,21 @@
+## Arrays (Nov 24)
+
+I can't decide if its better to just generate ir directly for array operations or write some functions in c and just call them as needed. 
+
+## More Tests (Nov 24)
+
+It seems more reasonable to write my test runner thing in ocaml than in c but its strangely awkward. 
+Running `dune test` puts you in a weird working directory so have to `Unix.chdir "../../../";`. 
+It also locks the `_build` directory so can't `dune build` from the test program. That's fair enough, it expects the tested lib to be a dependency of the test runner not invoked as a seperate executable. 
+It also doesn't run if the test file hasn't changed so would need to figure out how to mark the java files as like resource dependencies or whatever they call it. 
+
+I want to be able to test the simple operations on all the primitive types without needing to write the same function 6 times. 
+The only thing I can think of really it just java a template with placeholders and string replace each type name. 
+Can have a macro in c to call them. Probably also need to let them know the size of the integer so it can check that overflows work properly. 
+
 ## Static fields (Nov 24)
 
 Native method calls are trivial but need to revisit when I do name mangling. 
-
 
 There's a FieldMap just like for methods. Can easily get the ones that are static. 
 Trying to ive a static field a default value `not stack_comptime_safe in <clinit>`

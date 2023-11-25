@@ -1,2 +1,3 @@
 (test
- (name llvm_of_jvm))
+ (name llvm_of_jvm)
+ (libraries unix str))

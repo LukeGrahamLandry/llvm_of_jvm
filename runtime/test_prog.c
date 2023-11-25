@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <assert.h>
 
+// OpTest.java
 int add(int a, int b);
 int math(int a, int b, int c);
 int add_mut(int a, int b);
@@ -27,8 +28,11 @@ int call_native(int a);
 int inc_static();
 void do_nothing();
 void _clinit_();  // Static initializer block
+int mul(int a, int b) {  // Imported native
+    return a * b;
+}
 
-int main() {
+void optestjava() {
     assert(add(1, 2) == 3);
     assert(add(5, -2) == 3);
     assert(math(3, 2, 1) == 6);
@@ -80,15 +84,12 @@ int main() {
     assert(minzero(5) == 5);
     assert(call_native(5) == 10);
     do_nothing();
-
     _clinit_();
     assert(inc_static() == 11);
     assert(inc_static() == 12);
     assert(inc_static() == 13);
-    
 }
 
-// Imported native
-int mul(int a, int b) {
-    return a * b;
+int main() {
+    optestjava();
 }

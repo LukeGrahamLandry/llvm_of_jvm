@@ -7,7 +7,6 @@ See [devlog.md](devlog.md) (reverse chronological order) if interested in far to
 > - This is a toy project. Use GraalVM for anything real.
 > - This is also my first project learning OCaml so the code probably sucks.
 
-
 ## Implemented 
 
 - Math on all primitive types (+, -, *, =, %)
@@ -26,6 +25,7 @@ See [devlog.md](devlog.md) (reverse chronological order) if interested in far to
 - divide by zero trap
 - overloaded functions name mangling 
 - automaticlly call `_clinit_` on every class that needs it
+- figure out what a `char` is
 
 ## Libraries Used 
 
