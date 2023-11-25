@@ -10,6 +10,20 @@ OpArrayStore's arg is a jvm_array_type which is the same but all object types ar
 That's really a pattern with the library I'm using for the parsing bytecode. 
 They want to be all type safe and correct in reflecting the jvm spec but it means I have to do so many inane type conversions for slightly different representations. 
 Pleasingly the argument order on the stack is the intuitive one I assumed for my functions before I looked. 
+Should lazily forward declare the array functions only if they're actually called cause its annoying to see them all at the top of the ir. 
+
+Something fucked up where it works if you declare the accumulator at the top but not between loops. 
+It's trying to read var2_acc for the for loop counter instead of var4_i?
+Maybe I messed up the indexing of locals? But if I don't do doubles, same problem with floats which only take one slot. 
+Maybe its not stack_comptime_safe and my check is only detecting stack height changes but some instructions swap so if 
+you swap the top of the stack and then jump away you've perceived it even if it doesn't think you did. 
+Nope not that. 
+Looking in javap, its not making enough locals. L0 is the argument, L1 is the array, L2 is the for loop counter and then also L2 is acc.  
+It works if you declare the loop counter as a variable before the loop initializer, then it gets its own slot. 
+It must be reusing the slot because thier lifetimes don't overlap. The loop counter ends when at the end of the loop's scope. 
+So then do I have to key local variables by index and type? OpIInc doesn't have a type, hopefully only used on ints? 
+
+Now instead of tracking (local_index -> llvalue), have ((local_index, local_type) -> llvalue) and hope that javac made everything work out so they don't overlap and it can't tell they're actually in different places and then that llvm puts them back together to the same place in the end if that's actually the right choice. 
 
 ## More Tests (Nov 24)
 
@@ -17,10 +31,15 @@ It seems more reasonable to write my test runner thing in ocaml than in c but it
 Running `dune test` puts you in a weird working directory so have to `Unix.chdir "../../../";`. 
 It also locks the `_build` directory so can't `dune build` from the test program. That's fair enough, it expects the tested lib to be a dependency of the test runner not invoked as a seperate executable. 
 It also doesn't run if the test file hasn't changed so would need to figure out how to mark the java files as like resource dependencies or whatever they call it. 
+Some libraries seem to come with the default installation (?) but you still need to ask for them in the dune file `(libraries unix str)`, fair enough. 
+For now I'm just gonna use it as another binary target instead of the c one I had before. But you need to `dune build` and then run the exe directly. Need to revisit so it works with `dune test` eventually. 
+
+Just to make sure nothing's going terribly wrong, I want to report the time for each command. `Sys.time` gives numbers that seem too low compared to what my c runner was saying. I wonder if "Return the processor time, in seconds, used by the program since the beginning of execution." means it doesn't include the time you're sleeping waiting for the command to finish. That seems a little weird, like how does it know, I guess the OS must know and probably lets you ask. On second thought, `time` command gives you the split so clearly a plausable task. `Unix.gettimeofday` seems to give more reasonable values. 
 
 I want to be able to test the simple operations on all the primitive types without needing to write the same function 6 times. 
 The only thing I can think of really it just java a template with placeholders and string replace each type name. 
 Can have a macro in c to call them. Probably also need to let them know the size of the integer so it can check that overflows work properly. 
+Then to make that actually useful need to have my compiler load multiple classes and prefix function names so they don't conflict. 
 
 ## Static fields (Nov 24)
 

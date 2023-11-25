@@ -10,6 +10,7 @@ let run cmd =
 	| _ -> assert false);
 	end_time start cmd
 
+(* TODO: make the dirs if not already *)
 let do_templates () = 
 	let read_to_string filename =
 		let ch = open_in_bin filename in
@@ -26,24 +27,30 @@ let do_templates () =
 		Str.global_replace (Str.regexp_string before) after s
 	in
 	let template f size ty = 
-		let original = read_to_string f in
-		let new_name = "out/" ^ replace "TYPE" ty (replace ".txt" ".java" f) in
+		let original = read_to_string ("java/" ^ f ^ ".txt") in
+		let name = (replace "TYPE" ty f) in
+		let new_name = "out/java/" ^ name ^ ".java" in
 		let result = replace "TYPE" ty (replace "SIZE" size original) in
-		write_string new_name result
+		write_string new_name result;
+		name
 	in
 	let start = time () in
 	
-    let ints = ["byte"; "short"; "int"; "long"] in 
-	let sizes = ["1"; "2"; "4"; "8"] in
-    let all = "double" :: "float" :: ints in
-	List.iter (template "java/PrimitiveTemplateTYPE.txt" "?~?") all;
-	List.iter2 (template "java/IntegerTemplateTYPE.txt") sizes ints;
-	end_time start "Evaluate Templates"
+  let ints = ["int"; "long"] in (*TODO: "byte"; "short";  smaller types need to do math as integers *)
+	(* let sizes = ["1"; "2"; "4"; "8"] in *)
+	let all = "double" :: "float" :: ints in
+	let classes = List.map (template "PrimitiveTemplateTYPE" "?~?") all in
+	(* List.iter2 (template "IntegerTemplateTYPE") sizes ints; TODO *)
+	end_time start "Evaluate Templates";
+	classes
 
 let () = 
-	run "dune build";
-	do_templates ();
+	(* run "dune build"; want to have `dune build --watch` anyway *)
+	 (* TODO: This is ugly. Need to tell it which entry points to convert. Eventually just start at main? *)
+	let classes = "OpTest" :: do_templates () in
+	let classes = String.concat " " classes in
+
 	run "javac java/*.java out/java/*.java";
-	run "./_build/default/bin/main.exe > out/test.ll";
+	run ("./_build/default/bin/main.exe " ^ classes ^ " > out/test.ll");
 	run "gcc runtime/test_prog.c out/test.ll runtime/runtime.c -o out/testbin";
 	run "./out/testbin";

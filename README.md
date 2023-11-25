@@ -7,6 +7,8 @@ See [devlog.md](devlog.md) (reverse chronological order) if interested in far to
 > - This is a toy project. Use GraalVM for anything real.
 > - This is also my first project learning OCaml so the code probably sucks.
 
+The only garbage collection strategy so far is a reimplementation of the JDK's [Epsilon GC](https://blogs.oracle.com/javamagazine/post/epsilon-the-jdks-do-nothing-garbage-collector) ...what I'm saying is we just never free anything. That's good enough for short lived programs. 
+
 ## Implemented 
 
 - Math on all primitive types (+, -, *, =, %)

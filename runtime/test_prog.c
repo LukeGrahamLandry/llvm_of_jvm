@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
+#include "obj.h"
 
 // OpTest.java
 int add(int a, int b);
@@ -32,6 +33,7 @@ int add_array(int a);
 int mul(int a, int b) {  // Imported native
     return a * b;
 }
+int reuse_local(int a);
 
 void optestjava() {
     assert(add(1, 2) == 3);
@@ -90,8 +92,21 @@ void optestjava() {
     assert(inc_static() == 12);
     assert(inc_static() == 13);
     assert(add_array(3) == 6);
+    assert(reuse_local(0) == 0);
 }
+
+#define primitive_template(cty, jty) \
+    cty PrimitiveTemplate ## jty ## _add_array(int a); \
+    void do_primitive_template ## cty() {\
+        assert(PrimitiveTemplate ## jty ## _add_array(3) == 6); \
+    }\
+
+
+// primitive_template(i32, int)
+
 
 int main() {
     optestjava();
 }
+
+// TODO: should i move this and java/* to tests/*. kinda confusing for this to be in runtime but not part of the runtime. 

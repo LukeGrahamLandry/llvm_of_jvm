@@ -171,6 +171,17 @@ public class OpTest {
         return acc;
     }
 
+    public static int reuse_local(int a) {
+        int d = 0;
+        if (a < 0) {
+            int b = 10;
+            if (b == a) return 1;  // The llvm int compare forces it to observe both variables as an int
+        } else {
+            float c = 10.0f;  // This reuses the stack slot of b and overwrites its type to be float so the comparison above won't compile. 
+        }
+        return 0;
+    }
+
     static {
         acc += 6;
     }

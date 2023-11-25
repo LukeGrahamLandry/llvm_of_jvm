@@ -47,7 +47,7 @@ let slotcount_for ty =
     match ty with
     | TObject _ -> 1
     | TBasic basic -> match basic with
-        | `Int | `Short | `Char| `Byte | `Bool | `Float -> 1
+        | `Int | `Short | `Char | `Byte | `Bool | `Float -> 1
         | `Long | `Double -> 2
 
 let llfunc_type ctx sign = 
@@ -86,16 +86,17 @@ let find_basic_blocks (code: jopcode array): int list =
 type blockmap = (int, llbasicblock) Hashtbl.t
 
 let init_basic_blocks ctx func (blocks: int list): blockmap = 
-    let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ string_of_int index) func))) blocks in
+    let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ (string_of_int index) ^ "_") func))) blocks in
     Hashtbl.of_seq (List.to_seq pairs)
 
-type localtypemap = (int, jvm_type) Hashtbl.t
+(* TODO: this should be a set now i guess*)
+type localtypemap = (int * jvm_type, jvm_type) Hashtbl.t
 let find_local_types (code: jopcode array): localtypemap =
     let locals = Hashtbl.create 0 in
     Array.iter (fun op -> 
         match op with 
-        | OpLoad (ty, index) -> (Hashtbl.replace locals index ty)
-        | OpStore (ty, index) -> (Hashtbl.replace locals index ty)
+        | OpLoad (ty, index) -> (Hashtbl.replace locals (index, ty) ty)
+        | OpStore (ty, index) -> (Hashtbl.replace locals (index, ty) ty)
         | _ -> ()
     ) code;
     locals
@@ -104,9 +105,12 @@ let count_local_stores (code: jopcode array) =
     let locals = Hashtbl.create 0 in
     Array.iter (fun op -> 
         match op with 
-        | OpStore (_, index) | OpIInc (index, _) -> 
-            let prev = Option.default 0 (Hashtbl.find_opt locals index) in
-            (Hashtbl.replace locals index (prev + 1))
+        | OpStore (ty, index) -> 
+            let prev = Option.default 0 (Hashtbl.find_opt locals (index, ty)) in
+            (Hashtbl.replace locals (index, ty) (prev + 1))
+            | OpIInc (index, _) -> 
+                let prev = Option.default 0 (Hashtbl.find_opt locals (index, `Int2Bool)) in
+                (Hashtbl.replace locals (index, `Int2Bool) (prev + 1))
         | _ -> ()
     ) code;
     locals
@@ -126,7 +130,8 @@ type argplace =
     FinalArg of llvalue (* direct value. must never be stored to. *) 
     | Mut of llvalue (* pointer to stack slot*)
 type localinfo = { place: argplace; ty: lltype; }
-type localmap = (int, localinfo) Hashtbl.t
+type localkey = int * jvm_type
+type localmap = (localkey, localinfo) Hashtbl.t
 
 
 let assert_mut place = 
@@ -155,9 +160,12 @@ let alloc_locals ctx func code sign: localmap =
     let stores = count_local_stores code.c_code in
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
-    tblmap (fun (i, jvmtype) -> 
+    tblmap (fun (info: localkey * jvm_type) -> 
+        let key = fst info in
+        let jvmtype = snd key in
+        let i = fst key in
         let ty = lltype_of_jvmtype ctx jvmtype in
-        let stores = Option.default 0 (Hashtbl.find_opt stores i) in
+        let stores = Option.default 0 (Hashtbl.find_opt stores key) in
         let place = if stores > 0 then 
             let name = "var" ^ string_of_int i in
             let ptr = build_alloca ty name ctx.builder in
@@ -172,7 +180,7 @@ let alloc_locals ctx func code sign: localmap =
             let ssa = Hashtbl.find arg_locals i in
             FinalArg ssa 
         in
-        (i, { place; ty; })
+        ((i, jvmtype), { place; ty; })
     ) types
 
 (* Result is not in jvm index units. All types take one slot. *)
@@ -197,8 +205,25 @@ let op_stack_delta op =
     | (OpNewArray _) | OpArrayLength -> 0
     | (OpArrayLoad _) -> -1
     | (OpArrayStore _) -> -3
+    | OpGoto _ -> 0
 
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
+
+let inplace_stack_change op = 
+    if (op_stack_delta op) != 0 then false else
+    match op with
+    | (OpNeg _) -> true
+    | (OpIInc _) -> false
+    | OpInvoke ((`Static _), sign) -> 
+        let ret = if (ms_rtype sign) == None then 0 else 1 in
+        ret == (args_slotcount sign)
+    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S -> true
+    | OpInvalid -> false
+    | (OpNewArray _) | OpArrayLength -> true
+    | OpReturn _ -> false
+    | OpGoto _ -> false
+
+    | _ -> todo ("inplace_stack_change " ^ (JPrint.jopcode op))
 
 (* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
 let rec sliding_pairs (l: 'a list) =
@@ -213,7 +238,8 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     let block_ranges = sliding_pairs (List.concat [starts; [Array.length code]]) in
     let block_comptime_safe start last =
         let (_, res, stack) = Array.fold_left (fun (index, safe, stack) op -> 
-            if ((index < start) || (index >= last)) then (index, safe, stack) else 
+            if ((index < start) || (index >= last)) then (index + 1, safe, stack) else 
+            if stack == 0 && (inplace_stack_change op) then (index + 1, false, stack) else
             let new_stack = stack + op_stack_delta op in
             (index + 1, (safe && new_stack >= 0), new_stack)
         ) (0, true, 0) code in
@@ -341,7 +367,8 @@ let arr_decl_one ctx op (ty: jvm_array_type) =
     let func_ty = function_type ret (Array.of_list args) in
     let v = declare_function name func_ty ctx.the_module in
     (func_ty, v)
-
+ 
+(* TODO: do it lazily *)
 let array_decls ctx = 
     let arrays = Hashtbl.create (4*8) in
     let ops = [ArrInit; ArrGet; ArrLen; ArrSet] in
@@ -395,9 +422,9 @@ let convert_method ctx code current_sign funcmap fieldsmap arrays =
         in
 
         match op with
-        | OpLoad (_, i) -> load_local ctx i locals :: compstack
-        | OpStore (_, i) -> 
-            store_local ctx i locals (List.hd compstack);
+        | OpLoad (ty, i) -> load_local ctx (i, ty) locals :: compstack
+        | OpStore (ty, i) -> 
+            store_local ctx (i, ty) locals (List.hd compstack);
             drop_fst compstack
         | OpAdd ty -> do_bin (int_or_float ty build_add build_fadd) (* TODO: test overflow on smaller types *)
         | OpSub ty -> do_bin (int_or_float ty build_sub build_fsub) 
@@ -461,10 +488,11 @@ let convert_method ctx code current_sign funcmap fieldsmap arrays =
                 assert_empty (drop_fst stack))
         | OpConst v -> (emit_const ctx v) :: compstack
         | OpIInc (local_index, v) -> 
-            let old_val = load_local ctx local_index locals in
+            let key = (local_index, `Int2Bool) in
+            let old_val = load_local ctx key locals in
             let inc = const_int (i32_type ctx.context) v in
             let new_val = build_add old_val inc "" ctx.builder in
-            store_local ctx local_index locals new_val;
+            store_local ctx key locals new_val;
             compstack
 
         | OpNeg ty -> 
@@ -604,12 +632,16 @@ let emit_class ctx cls =
     ()
 
 let () = 
+    let classes = drop_fst (Array.to_list Sys.argv) in
+
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
     let path = class_path "./java:./out/java" in
-    let cls = get_class path (make_cn "OpTest") in
-    emit_class ctx cls;
+    List.iter (fun name -> 
+        let cls = get_class path (make_cn name) in
+        emit_class ctx cls;
+    ) classes;
     
     let code = string_of_llmodule ctx.the_module in
     print_endline code;
