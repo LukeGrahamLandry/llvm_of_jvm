@@ -34,6 +34,8 @@ int mul(int a, int b) {  // Imported native
     return a * b;
 }
 int reuse_local(int a);
+int arr_of_arr(int a);
+int nested_arr(int a);
 
 void optestjava() {
     assert(add(1, 2) == 3);
@@ -93,6 +95,8 @@ void optestjava() {
     assert(inc_static() == 13);
     assert(add_array(3) == 6);
     assert(reuse_local(0) == 0);
+    assert(arr_of_arr(3) == 66);
+    assert(nested_arr(2) == (2*3*4*5));
 }
 
 // PrimitiveTemplateTYPE.txt

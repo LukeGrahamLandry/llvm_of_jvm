@@ -126,17 +126,21 @@ let lltype_of_jvmtype ctx (ty: jvm_type) =
     | `Double -> double_type ctx.context
 
 (* TODO: is there any way to deal with overlaping enums in a less painful way? *)
+let arraytype_of_basictype ty = 
+    match ty with
+    | `Byte | `Bool -> `ByteBool
+    | `Int -> `Int
+    | `Short -> `Short
+    | `Char -> `Char
+    | `Float -> `Float
+    | `Long -> `Long
+    | `Double -> `Double
+
 let arraytype_of_valuetype ty = 
     match ty with
     | TObject _ -> `Object
-    | TBasic basic -> match basic with
-        | `Byte | `Bool -> `ByteBool
-        | `Int -> `Int
-        | `Short -> `Short
-        | `Char -> `Char
-        | `Float -> `Float
-        | `Long -> `Long
-        | `Double -> `Double
+    | TBasic basic -> arraytype_of_basictype basic
+
 
 (* A function argument can be reassigned like a local but if it isn't, don't ask for a stack slot *)
 type argplace = 
@@ -219,6 +223,7 @@ let op_stack_delta op =
     | (OpArrayLoad _) -> -1
     | (OpArrayStore _) -> -3
     | OpGoto _ -> 0
+    | OpAMultiNewArray (_, dim) -> 1 - dim
 
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
@@ -235,6 +240,9 @@ let inplace_stack_change op =
     | (OpNewArray _) | OpArrayLength -> true
     | OpReturn _ -> false
     | OpGoto _ -> false
+    | (OpAMultiNewArray (_, d)) -> 
+        assert (d == 1);
+        illegal "OpAMultiNewArray of dim=1"
 
     | _ -> todo ("inplace_stack_change " ^ (JPrint.jopcode op))
 
@@ -368,6 +376,7 @@ type rt_intrinsic =
     | ArrInit of jvm_array_type 
     | ArrGet of jvm_array_type 
     | ArrSet of jvm_array_type 
+    | ArrFillMulti of jvm_array_type
 
 (* This must match with a function in runtime.c *)
 let intrinsic_signature ctx op = 
@@ -379,6 +388,7 @@ let intrinsic_signature ctx op =
         | ArrGet ty -> "array_get_" ^ (ctype_name ty), [arr_t; i_t], lltype_of_arrtype ctx ty
         | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
         | ArrLen -> "array_length", [arr_t], i_t
+        | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
     in
     (name, args, ret)
 
@@ -393,6 +403,12 @@ let get_rtintrinsic ctx memo op =
     let f = (func_ty, v) in 
     Hashtbl.replace memo op f;
     f
+
+let rec inner_array_type (obj: object_type): jvm_array_type = 
+    match obj with
+    | TClass _ -> `Object
+    | TArray (TBasic b) -> arraytype_of_basictype b
+    | TArray (TObject obj2) -> inner_array_type obj2
 
 let convert_method ctx code current_sign funcmap fieldsmap intrinsics = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
@@ -434,10 +450,10 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
         in
 
         let pre (x, xs) = x :: xs in
-        let call_intin intrin = 
+        let call_intin intrin in_stack = 
             let f = get_rtintrinsic ctx intrinsics intrin in 
             let arg_count = Array.length (param_types (fst f)) in
-            let (stack, args) = pop_n compstack arg_count in
+            let (stack, args) = pop_n in_stack arg_count in
             let ret = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
             (ret, stack)
         in
@@ -568,10 +584,27 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
 
         | (OpNewArray ty) -> (* TODO: a test that would fail if you just always put `Int here because it seems my current ones passed when I forgot. *)
             let ty = arraytype_of_valuetype ty in
-            pre (call_intin (ArrInit ty))
-        | OpArrayLength -> pre (call_intin ArrLen)
-        | (OpArrayStore ty) -> snd (call_intin (ArrSet ty))
-        | (OpArrayLoad ty) -> pre (call_intin (ArrGet ty))
+            pre (call_intin (ArrInit ty) compstack)
+        | OpArrayLength -> pre (call_intin ArrLen compstack)
+        | (OpArrayStore ty) -> snd (call_intin (ArrSet ty) compstack)
+        | (OpArrayLoad ty) -> pre (call_intin (ArrGet ty) compstack)
+        
+        | OpAMultiNewArray (ty, dim) -> 
+            let (rest_stack, counts) = pop_n compstack dim in
+            let inner_type = inner_array_type ty in
+
+            let (arr, counts) = call_intin (ArrInit `Object) counts in
+            let rec do_fill working depth = (* working = array_ref :: [..counts] *)
+                let isLast = (List.length working) == 2 in
+                let this_ty = if isLast then inner_type else `Object in
+                let depth_v = const_int (i32_type ctx.context) depth in
+                let (arr, counts) = call_intin (ArrFillMulti this_ty) (depth_v :: working) in
+                if isLast then [arr] else do_fill (arr :: counts) (depth + 1)
+            in
+
+            let working = do_fill (arr :: counts) 0 in
+            let _ = assert (List.length working == 1) in
+            (List.hd working) :: rest_stack
         
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 

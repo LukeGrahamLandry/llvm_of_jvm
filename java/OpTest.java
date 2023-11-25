@@ -158,6 +158,9 @@ public class OpTest {
         acc += 1;
         return acc;
     }
+    static {
+        acc += 6;
+    }
 
     public static int add_array(int a) {
         int[] nums = new int[a];
@@ -182,7 +185,38 @@ public class OpTest {
         return 0;
     }
 
-    static {
-        acc += 6;
+    public static int arr_of_arr(int a) {
+        int[][] nums = new int[a][a+1];
+        if (nums.length >= nums[0].length) return -1;
+        int i =0;
+        for (int[] s : nums) {
+            for (int j=0;j<s.length;j++) {
+                s[j] = i;
+                i++;
+            }
+        }
+        int acc = 0;
+        for (int[] s : nums) {
+            for (int z : s) {
+                acc += z;
+            }
+        }
+        return acc;
+    }
+
+    public static int nested_arr(int a) {
+        int[][][][] nums = new int[a][a+1][a+2][a+3];
+        int i = 0;
+        for (var b : nums) {
+            for (var c : b) {
+                for (var d : c) {
+                    for (int e : d) {
+                        i++;
+                    }
+                }
+            }
+        }
+        nums[0][1][2][3] = i;
+        return nums[0][1][2][3];
     }
 }
