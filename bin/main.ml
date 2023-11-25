@@ -33,6 +33,16 @@ let lltype_of_valuetype ctx ty =
     | TObject _ -> todo "TObject"
     | TBasic basic -> lltype_of_basic ctx basic
 
+let lltype_of_arrtype ctx ty = 
+    (match ty with
+    | `Int -> i32_type
+    | `Short | `Char -> i16_type
+    | `ByteBool -> i8_type
+    | `Long -> i64_type
+    | `Float -> float_type
+    | `Double -> double_type
+    | `Object -> pointer_type) ctx.context
+
 let slotcount_for ty = 
     match ty with
     | TObject _ -> 1
@@ -184,6 +194,10 @@ let op_stack_delta op =
         ret - args_slotcount sign
     | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S -> 0
     | OpInvalid -> 0
+    | (OpNewArray _) | OpArrayLength -> 0
+    | (OpArrayLoad _) -> -1
+    | (OpArrayStore _) -> -3
+
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
 (* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
@@ -298,7 +312,50 @@ let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t =
         | `Le -> Ule
         | `Null | `NonNull -> illegal "fcmp Null/NonNull")
 
-let convert_method ctx code current_sign funcmap fieldsmap = 
+
+type array_call = ArrInit | ArrGet | ArrSet | ArrLen
+
+let ctype_name (ty: jvm_array_type) = 
+    match ty with
+        | `Int -> "i32"
+        | `Short -> "i16"
+        | `Char -> "u16"
+        | `ByteBool -> "i8"
+        | `Long -> "i64"
+        | `Float -> "f32"
+        | `Double -> "f64"
+        | `Object -> "objptr"
+
+let arr_decl_one ctx op (ty: jvm_array_type) =
+    let arr_t = pointer_type ctx.context in
+    let i_t = i32_type ctx.context in
+    let void_t = void_type ctx.context in
+    let e_t = lltype_of_arrtype ctx ty in
+    let (prefix, args, ret) = match op with
+        | ArrInit -> "init", [i_t], arr_t
+        | ArrGet -> "get", [arr_t; i_t], e_t
+        | ArrSet -> "set", [arr_t; i_t; e_t], void_t
+        | ArrLen -> "length", [arr_t], i_t
+    in
+    let name = "array_" ^ prefix ^ "_" ^ (ctype_name ty) in
+    let func_ty = function_type ret (Array.of_list args) in
+    let v = declare_function name func_ty ctx.the_module in
+    (func_ty, v)
+
+let array_decls ctx = 
+    let arrays = Hashtbl.create (4*8) in
+    let ops = [ArrInit; ArrGet; ArrLen; ArrSet] in
+    let tys = [`Int; `Short; `Char; `ByteBool; `Object; `Long; `Float; `Double] in
+    List.iter (fun op -> (
+        List.iter (fun ty -> (
+            Hashtbl.add arrays (op, ty) (arr_decl_one ctx op ty);
+
+        )) tys
+    )) ops;
+    arrays
+
+
+let convert_method ctx code current_sign funcmap fieldsmap arrays = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
     let ret_ty = ms_rtype current_sign in
 
@@ -460,6 +517,30 @@ let convert_method ctx code current_sign funcmap fieldsmap =
             let _ = build_store (List.hd compstack) ptr ctx.builder in
             drop_fst compstack
 
+        | (OpNewArray _todo_ty) -> 
+            let len = List.hd compstack in
+            let f = Hashtbl.find arrays (ArrInit, `Int) in (* TODO: type *)
+            let arr = build_call (fst f) (snd f) (Array.of_list [len]) "" ctx.builder in
+            arr :: drop_fst compstack
+        
+        | OpArrayLength -> 
+            let arr = List.hd compstack in
+            let f = Hashtbl.find arrays (ArrLen, `Int) in (* TODO: use the right type or at least cast it cause length field always same place *)
+            let len = build_call (fst f) (snd f) (Array.of_list [arr]) "" ctx.builder in
+            len :: drop_fst compstack
+
+        | (OpArrayStore ty) -> 
+            let (stack, args) = pop_n compstack 3 in
+            let f = Hashtbl.find arrays (ArrSet, ty) in
+            let _ = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
+            stack
+
+        | (OpArrayLoad ty) -> 
+            let (stack, args) = pop_n compstack 2 in
+            let f = Hashtbl.find arrays (ArrGet, ty) in
+            let v = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
+            v :: stack
+            
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
         | (OpRet _) | (OpJsr _ ) -> illegal ((JPrint.jopcode op) ^ " was deprecated in Java 7.")
@@ -474,7 +555,7 @@ let convert_method ctx code current_sign funcmap fieldsmap =
 
     ()
 
-let emit_method ctx m funcmap fieldsmap = 
+let emit_method ctx m funcmap fieldsmap arr_helpers = 
     match m with
     | AbstractMethod _ -> todo "AbstractMethod"
     | ConcreteMethod func ->
@@ -482,7 +563,7 @@ let emit_method ctx m funcmap fieldsmap =
             | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode func.cm_signature funcmap fieldsmap
+                    convert_method ctx jcode func.cm_signature funcmap fieldsmap arr_helpers
         )
 
 let replace_chars s before after = 
@@ -511,13 +592,14 @@ let emit_static_field ctx anyfield =
         { place=Mut v; ty }
 
 let emit_class ctx cls = 
+    let arr_helpers = array_decls ctx in
     let methods = MethodMap.filter is_static_method (get_methods cls) in
     let funcmap = MethodMap.map (forward_declare_method ctx) methods in
     let static_fields = FieldMap.filter is_static_field (get_fields cls) in
     let fieldsmap = FieldMap.map (emit_static_field ctx) static_fields in
 
     let _ = MethodMap.map (fun m ->
-        emit_method ctx m funcmap fieldsmap
+        emit_method ctx m funcmap fieldsmap arr_helpers
         ) methods in
     ()
 

@@ -28,6 +28,7 @@ int call_native(int a);
 int inc_static();
 void do_nothing();
 void _clinit_();  // Static initializer block
+int add_array(int a);
 int mul(int a, int b) {  // Imported native
     return a * b;
 }
@@ -88,6 +89,7 @@ void optestjava() {
     assert(inc_static() == 11);
     assert(inc_static() == 12);
     assert(inc_static() == 13);
+    assert(add_array(3) == 6);
 }
 
 int main() {

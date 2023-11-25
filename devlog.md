@@ -2,6 +2,15 @@
 
 I can't decide if its better to just generate ir directly for array operations or write some functions in c and just call them as needed. 
 
+
+Really annoying like 40 lines of setting up the function forward declarations in llvm for all the types of array. 
+Now a bunch of tedius calling the functions. There's just so many stupid conversions. 
+OpNewArray's arg is a value_type (which I thought they'd all be so used to key my map) but 
+OpArrayStore's arg is a jvm_array_type which is the same but all object types are uniform and bool=byte. 
+That's really a pattern with the library I'm using for the parsing bytecode. 
+They want to be all type safe and correct in reflecting the jvm spec but it means I have to do so many inane type conversions for slightly different representations. 
+Pleasingly the argument order on the stack is the intuitive one I assumed for my functions before I looked. 
+
 ## More Tests (Nov 24)
 
 It seems more reasonable to write my test runner thing in ocaml than in c but its strangely awkward. 

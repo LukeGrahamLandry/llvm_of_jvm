@@ -25,7 +25,7 @@ typedef uint16_t u16;  // java char
         return arr->length;                  \
     }                                        \
     \
-    Array_##ty * array_init_##ty (i32 length) {                     \
+    Array_##ty* array_init_##ty (i32 length) {                      \
         assert(length >= 0);                                        \
         size_t bytes = sizeof(Array_##ty) + (length * sizeof(ty));  \
         Array_##ty* arr = malloc(bytes);                            \
@@ -39,12 +39,12 @@ typedef uint16_t u16;  // java char
     }                                       \
     \
     ty array_get_##ty (Array_##ty* arr, i32 i) {         \
-        assert(arr != NULL && i < arr->length && i > 0); \
+        assert(arr != NULL && i < arr->length && i >= 0); \
         return arr->data[i];                             \
     }                                                    \
     \
     void array_set_##ty (Array_##ty* arr, i32 i, ty v) { \
-        assert(arr != NULL && i < arr->length && i > 0); \
+        assert(arr != NULL && i < arr->length && i >= 0);\
         arr->data[i] = v;                                \
     }                                                    \
 

@@ -159,6 +159,18 @@ public class OpTest {
         return acc;
     }
 
+    public static int add_array(int a) {
+        int[] nums = new int[a];
+        for (int i=0;i<a;i++) {
+            nums[i] = i + 1;
+        }
+        int acc = 0;
+        for (int i=0;i<nums.length;i++) {
+            acc += nums[i];
+        }
+        return acc;
+    }
+
     static {
         acc += 6;
     }
