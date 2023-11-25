@@ -86,7 +86,7 @@ let find_basic_blocks (code: jopcode array): int list =
 type blockmap = (int, llbasicblock) Hashtbl.t
 
 let init_basic_blocks ctx func (blocks: int list): blockmap = 
-    let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ (string_of_int index) ^ "_") func))) blocks in
+    let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ string_of_int index) func))) blocks in
     Hashtbl.of_seq (List.to_seq pairs)
 
 (* TODO: this should be a set now i guess*)
@@ -124,6 +124,19 @@ let lltype_of_jvmtype ctx (ty: jvm_type) =
     | `Long -> i64_type ctx.context
     | `Float -> float_type ctx.context
     | `Double -> double_type ctx.context
+
+(* TODO: is there any way to deal with overlaping enums in a less painful way? *)
+let arraytype_of_valuetype ty = 
+    match ty with
+    | TObject _ -> `Object
+    | TBasic basic -> match basic with
+        | `Byte | `Bool -> `ByteBool
+        | `Int -> `Int
+        | `Short -> `Short
+        | `Char -> `Char
+        | `Float -> `Float
+        | `Long -> `Long
+        | `Double -> `Double
 
 (* A function argument can be reassigned like a local but if it isn't, don't ask for a stack slot *)
 type argplace = 
@@ -167,7 +180,7 @@ let alloc_locals ctx func code sign: localmap =
         let ty = lltype_of_jvmtype ctx jvmtype in
         let stores = Option.default 0 (Hashtbl.find_opt stores key) in
         let place = if stores > 0 then 
-            let name = "var" ^ string_of_int i in
+            let name = "var" ^ (string_of_int i) ^ "_" in
             let ptr = build_alloca ty name ctx.builder in
             (match Hashtbl.find_opt arg_locals i with
             | Some ssa -> (* its an argument. copy it to its stack slot*)
@@ -338,9 +351,6 @@ let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t =
         | `Le -> Ule
         | `Null | `NonNull -> illegal "fcmp Null/NonNull")
 
-
-type array_call = ArrInit | ArrGet | ArrSet | ArrLen
-
 let ctype_name (ty: jvm_array_type) = 
     match ty with
         | `Int -> "i32"
@@ -351,38 +361,40 @@ let ctype_name (ty: jvm_array_type) =
         | `Float -> "f32"
         | `Double -> "f64"
         | `Object -> "objptr"
+                
+(* Represents a callable function in the runtime.c *)
+type rt_intrinsic = 
+    | ArrLen
+    | ArrInit of jvm_array_type 
+    | ArrGet of jvm_array_type 
+    | ArrSet of jvm_array_type 
 
-let arr_decl_one ctx op (ty: jvm_array_type) =
+(* This must match with a function in runtime.c *)
+let intrinsic_signature ctx op = 
     let arr_t = pointer_type ctx.context in
     let i_t = i32_type ctx.context in
-    let void_t = void_type ctx.context in
-    let e_t = lltype_of_arrtype ctx ty in
-    let (prefix, args, ret) = match op with
-        | ArrInit -> "init", [i_t], arr_t
-        | ArrGet -> "get", [arr_t; i_t], e_t
-        | ArrSet -> "set", [arr_t; i_t; e_t], void_t
-        | ArrLen -> "length", [arr_t], i_t
+
+    let (name, args, ret) = match op with
+        | ArrInit ty -> "array_init_" ^ (ctype_name ty), [i_t], arr_t
+        | ArrGet ty -> "array_get_" ^ (ctype_name ty), [arr_t; i_t], lltype_of_arrtype ctx ty
+        | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
+        | ArrLen -> "array_length", [arr_t], i_t
     in
-    let name = "array_" ^ prefix ^ "_" ^ (ctype_name ty) in
+    (name, args, ret)
+
+let get_rtintrinsic ctx memo op =
+    match Hashtbl.find_opt memo op with
+    | Some f -> f 
+    | None -> (* First time calling, need to forward declare it. *)
+    
+    let (name, args, ret) = intrinsic_signature ctx op in
     let func_ty = function_type ret (Array.of_list args) in
     let v = declare_function name func_ty ctx.the_module in
-    (func_ty, v)
- 
-(* TODO: do it lazily *)
-let array_decls ctx = 
-    let arrays = Hashtbl.create (4*8) in
-    let ops = [ArrInit; ArrGet; ArrLen; ArrSet] in
-    let tys = [`Int; `Short; `Char; `ByteBool; `Object; `Long; `Float; `Double] in
-    List.iter (fun op -> (
-        List.iter (fun ty -> (
-            Hashtbl.add arrays (op, ty) (arr_decl_one ctx op ty);
+    let f = (func_ty, v) in 
+    Hashtbl.replace memo op f;
+    f
 
-        )) tys
-    )) ops;
-    arrays
-
-
-let convert_method ctx code current_sign funcmap fieldsmap arrays = 
+let convert_method ctx code current_sign funcmap fieldsmap intrinsics = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
     let ret_ty = ms_rtype current_sign in
 
@@ -419,6 +431,15 @@ let convert_method ctx code current_sign funcmap fieldsmap arrays =
             let a = List.nth s 0 in
             let b = List.nth s 1 in
             (f k b a "" ctx.builder), (drop_fst (drop_fst s))
+        in
+
+        let pre (x, xs) = x :: xs in
+        let call_intin intrin = 
+            let f = get_rtintrinsic ctx intrinsics intrin in 
+            let arg_count = Array.length (param_types (fst f)) in
+            let (stack, args) = pop_n compstack arg_count in
+            let ret = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
+            (ret, stack)
         in
 
         match op with
@@ -545,30 +566,13 @@ let convert_method ctx code current_sign funcmap fieldsmap arrays =
             let _ = build_store (List.hd compstack) ptr ctx.builder in
             drop_fst compstack
 
-        | (OpNewArray _todo_ty) -> 
-            let len = List.hd compstack in
-            let f = Hashtbl.find arrays (ArrInit, `Int) in (* TODO: type *)
-            let arr = build_call (fst f) (snd f) (Array.of_list [len]) "" ctx.builder in
-            arr :: drop_fst compstack
+        | (OpNewArray ty) -> (* TODO: a test that would fail if you just always put `Int here because it seems my current ones passed when I forgot. *)
+            let ty = arraytype_of_valuetype ty in
+            pre (call_intin (ArrInit ty))
+        | OpArrayLength -> pre (call_intin ArrLen)
+        | (OpArrayStore ty) -> snd (call_intin (ArrSet ty))
+        | (OpArrayLoad ty) -> pre (call_intin (ArrGet ty))
         
-        | OpArrayLength -> 
-            let arr = List.hd compstack in
-            let f = Hashtbl.find arrays (ArrLen, `Int) in (* TODO: use the right type or at least cast it cause length field always same place *)
-            let len = build_call (fst f) (snd f) (Array.of_list [arr]) "" ctx.builder in
-            len :: drop_fst compstack
-
-        | (OpArrayStore ty) -> 
-            let (stack, args) = pop_n compstack 3 in
-            let f = Hashtbl.find arrays (ArrSet, ty) in
-            let _ = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
-            stack
-
-        | (OpArrayLoad ty) -> 
-            let (stack, args) = pop_n compstack 2 in
-            let f = Hashtbl.find arrays (ArrGet, ty) in
-            let v = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
-            v :: stack
-            
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
         | (OpRet _) | (OpJsr _ ) -> illegal ((JPrint.jopcode op) ^ " was deprecated in Java 7.")
@@ -583,7 +587,7 @@ let convert_method ctx code current_sign funcmap fieldsmap arrays =
 
     ()
 
-let emit_method ctx m funcmap fieldsmap arr_helpers = 
+let emit_method ctx m funcmap fieldsmap intrinsics = 
     match m with
     | AbstractMethod _ -> todo "AbstractMethod"
     | ConcreteMethod func ->
@@ -591,7 +595,7 @@ let emit_method ctx m funcmap fieldsmap arr_helpers =
             | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode func.cm_signature funcmap fieldsmap arr_helpers
+                    convert_method ctx jcode func.cm_signature funcmap fieldsmap intrinsics
         )
 
 let replace_chars s before after = 
@@ -619,15 +623,14 @@ let emit_static_field ctx anyfield =
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
 
-let emit_class ctx cls = 
-    let arr_helpers = array_decls ctx in
+let emit_class ctx cls intrinsics = 
     let methods = MethodMap.filter is_static_method (get_methods cls) in
     let funcmap = MethodMap.map (forward_declare_method ctx) methods in
     let static_fields = FieldMap.filter is_static_field (get_fields cls) in
     let fieldsmap = FieldMap.map (emit_static_field ctx) static_fields in
 
     let _ = MethodMap.map (fun m ->
-        emit_method ctx m funcmap fieldsmap arr_helpers
+        emit_method ctx m funcmap fieldsmap intrinsics
         ) methods in
     ()
 
@@ -638,9 +641,10 @@ let () =
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
     let path = class_path "./java:./out/java" in
+    let intrinsics = Hashtbl.create 0 in
     List.iter (fun name -> 
         let cls = get_class path (make_cn name) in
-        emit_class ctx cls;
+        emit_class ctx cls intrinsics;
     ) classes;
     
     let code = string_of_llmodule ctx.the_module in

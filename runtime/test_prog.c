@@ -95,18 +95,35 @@ void optestjava() {
     assert(reuse_local(0) == 0);
 }
 
+// PrimitiveTemplateTYPE.txt
 #define primitive_template(cty, jty) \
-    cty PrimitiveTemplate ## jty ## _add_array(int a); \
-    void do_primitive_template ## cty() {\
-        assert(PrimitiveTemplate ## jty ## _add_array(3) == 6); \
-    }\
+    cty add_array##jty(int a);          \
+    cty math##jty(cty a, cty b, cty c); \
+    \
+    void do_primitive_template_ ## jty() { \
+        assert(add_array##jty(3) == 6);   \
+        assert(add_array##jty(4) == 10);  \
+        assert(math##jty(3, 2, 1) == 6);  \
+    }                                     \
 
+// IntegerTemplateTYPE.txt TODO
+#define integer_template(cty, jty) ;
 
-// primitive_template(i32, int)
+primitive_template(i32, int)
+primitive_template(i64, long)
+primitive_template(f32, float)
+primitive_template(f64, double)
 
+void templates() {
+    do_primitive_template_int();
+    do_primitive_template_long();
+    do_primitive_template_float();
+    do_primitive_template_double();
+}
 
 int main() {
     optestjava();
+    templates();
 }
 
 // TODO: should i move this and java/* to tests/*. kinda confusing for this to be in runtime but not part of the runtime. 
