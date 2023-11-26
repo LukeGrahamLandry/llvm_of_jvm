@@ -3,6 +3,7 @@ open Javalib_pack
 open Javalib
 open JBasics
 open JCode
+open Printf
 
 (* This kinda represents permission to do imperative stuff with the llvm api. *)
 type codegen = {
@@ -12,6 +13,7 @@ type codegen = {
 }
 
 (*== Semantic messages for exceptions that should not be caught ==*)
+(* `export OCAMLRUNPARAM=b` in shell makes it print a stack trace if it hits an assertion *)
 exception Panic of string
 let todo msg = raise (Panic ("NOT YET IMPLEMENTED: " ^ msg))
 let illegal msg = raise (Panic ("ILLEGAL INPUT: " ^ msg))
@@ -198,6 +200,8 @@ let op_stack_delta op =
     | OpAMultiNewArray (_, dim) -> 1 - dim
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
+(* TODO: This is still wrong. An op that pops 2 then pushes 3 mutates the stack but I'd see it as net pushing 1 so think its fine. 
+         Should split op_stack_delta into op_count_pops and op_count_pushes so this becomes obvious. *)
 let inplace_stack_change op = 
     if (op_stack_delta op) != 0 then false else
     match op with
@@ -224,7 +228,7 @@ let find_basic_blocks (code: jopcode array): int list =
     let rec add_target l i = 
         if List.exists ((=) i) l then l else 
             let target_fcmp = match Array.get code i with | (OpCmp _) -> true | _ -> false in
-            let next_if = match Array.get code (i + 1) with | (OpIf _) -> true | _ -> false in
+            let next_if = i + 1 < (Array.length code) && match Array.get code (i + 1) with | (OpIf _) -> true | _ -> false in
             let target_if = match Array.get code i with | (OpIf _) -> true | _ -> false in
             let prev_fcmp = i != 0 && match Array.get code (i - 1) with | (OpCmp _) -> true | _ -> false in
             if target_if && prev_fcmp then illegal "jumped directly to OpIf after fcmp";
@@ -326,6 +330,7 @@ let alloc_locals ctx func code sign: localmap =
         ((i, jvmtype), { place; ty; })
     ) types
 
+(* TODO: write some simple tests for this function because its scary and important. *)
 (* It seems javac doesn't generate code that would return false here which is very convient. (Except for ternary operator)*)
 let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     let starts = List.sort compare block_starts in
@@ -341,7 +346,22 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     in
     List.fold_left (fun prev (start, last) -> prev && (block_comptime_safe start last)) (true) block_ranges 
 
-(*== C runtime intrinsics ==*)
+(* TODO: this should go in test exe instead of here. *)
+let () = (* test_stack_comptime_safe *)
+    let expect_no ops = 
+        let l = Array.of_list ops in
+        assert (not (stack_comptime_safe (find_basic_blocks l) l)) in
+
+    expect_no [ (* ternary operator needs a phi node *)
+        OpLoad (`Int2Bool, 0); OpIf (`Ge, 7); OpInvalid; OpInvalid; OpConst (`Int 0l); (OpGoto 4); OpInvalid; OpInvalid; OpLoad (`Int2Bool, 0); OpStore (`Int2Bool, 1); OpLoad (`Int2Bool, 1); OpReturn `Int2Bool;
+    ];
+    expect_no [ (* negate mutates stack in place *)
+        OpLoad (`Int2Bool, 0); OpIf (`Ge, 4); OpInvalid; OpInvalid; OpNeg `Int2Bool; OpReturn `Int2Bool;
+    ];
+    
+    ()
+
+(*== Runtime intrinsics ==*)
 
 type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | ArrLen
@@ -416,6 +436,8 @@ let emit_const2 ctx (v: constant_attribute): llvalue =
     | `Double n -> const_float (double_type ctx.context) n
     | `String _ -> todo "constant string"
 
+let total_seen = ref 0  (* TODO: can remove. was just curious *)
+
 let convert_method ctx code current_sign funcmap fieldsmap intrinsics = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
     let ret_ty = ms_rtype current_sign in
@@ -448,8 +470,10 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
     in
 
     let emit_op compstack op index prev_op = 
+        if op != OpInvalid then total_seen := !total_seen + 1;
+
         (match Hashtbl.find_opt basic_blocks index with
-        | Some bb -> 
+        | Some bb -> (* entering a new block *)
             let current = insertion_block ctx.builder in
             (match block_terminator current with 
             | Some _ -> () (* last instruction was a jump *)
@@ -569,7 +593,7 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
             if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
 
         | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
-            (match (Array.get code.c_code (index + 1)) with
+            (match (Array.get code.c_code (index + 1)) with (* TODO: pass next_op to emit_op if i start using it for anything *)
             | (OpIf _) -> compstack 
             | _ -> illegal "OpCmp must be followed by OpIf")
 
@@ -585,13 +609,14 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
             let _ = build_store (List.hd compstack) ptr ctx.builder in
             drop_fst compstack
 
-        | (OpNewArray ty) -> (* TODO: a test that would fail if you just always put `Int here because it seems my current ones passed when I forgot. *)
+        | (OpNewArray ty) ->
             let ty = arraytype_of_valuetype ty in
             pre (call_intin (ArrInit ty) compstack)
         | OpArrayLength -> pre (call_intin ArrLen compstack)
         | (OpArrayStore ty) -> snd (call_intin (ArrSet ty) compstack)
         | (OpArrayLoad ty) -> pre (call_intin (ArrGet ty) compstack)
         
+        (* TOOD: make this just one a runtime call passing the counts array *)
         | OpAMultiNewArray (ty, dim) -> 
             let (rest_stack, counts) = pop_n compstack dim in
             let inner_type = inner_array_type ty in
@@ -684,3 +709,4 @@ let () =
     
     let code = string_of_llmodule ctx.the_module in
     print_endline code;
+    eprintf "Compiled %d bytecode instructions.\n" (!total_seen);

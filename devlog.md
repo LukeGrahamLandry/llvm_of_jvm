@@ -22,6 +22,9 @@ So then do I have to key local variables by index and type? OpIInc doesn't have 
 
 Now instead of tracking (local_index -> llvalue), have ((local_index, local_type) -> llvalue) and hope that javac made everything work out so they don't overlap and it can't tell they're actually in different places and then that llvm puts them back together to the same place in the end if that's actually the right choice. 
 
+Did some cleaning up of how the intrinsic calls are represented in the compiler to make it easier to add new ones. 
+Discovered it works if you init the type of array, need to add a test that fails. I guess initing too big is fine and initing too small it just writes off the end and im not running with address sanitizer so it just happened to work out. 
+
 Multidimensional arrays have thier own opcode instead of just generating a loop in bytecode (or even a function call to some builtin thing). Seems a little weird to me, like why is that such a core operation you'll be doing so often that it needs its own opcode.
 
 ## Arrays (Nov 24)
