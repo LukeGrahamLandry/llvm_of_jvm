@@ -4,18 +4,46 @@ open Javalib
 open JBasics
 open JCode
 
-(* Semantic messages for exceptions that should not be caught. *)
-exception Panic of string
-let todo msg = raise (Panic ("NOT YET IMPLEMENTED: " ^ msg))
-let illegal msg = raise (Panic ("ILLEGAL INPUT: " ^ msg))
-let unreachable () = raise (Panic "UNREACHABLE") (* needs to take an argument, otherwise its evaluated as an entry point???? *)
-
 (* This kinda represents permission to do imperative stuff with the llvm api. *)
 type codegen = {
     context: llcontext;
     the_module: llmodule;
     builder: llbuilder;
 }
+
+(*== Semantic messages for exceptions that should not be caught ==*)
+exception Panic of string
+let todo msg = raise (Panic ("NOT YET IMPLEMENTED: " ^ msg))
+let illegal msg = raise (Panic ("ILLEGAL INPUT: " ^ msg))
+let unreachable () = raise (Panic "UNREACHABLE") (* needs to take an argument, otherwise its evaluated as an entry point???? *)
+
+(*== Little utilities for working with lists ==*)
+
+let tblmap f m = Hashtbl.of_seq (Seq.map f (Hashtbl.to_seq m))
+let pre (x, xs) = x :: xs
+let assert_empty l = if not (List.length l == 0) then illegal "Expected list to be empty" else l
+let replace_chars s before after = String.map (fun c -> if String.contains before c then after else c) s
+
+(* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
+let rec sliding_pairs l =
+    match l with
+    | a :: [b] -> [(a, b)]
+    | a :: (b :: rest) -> (a, b) :: (sliding_pairs rest)
+    | _ -> []
+
+let drop_fst l = 
+    match l with 
+    | [] -> illegal "drop_fst empty"
+    | _ :: rest -> rest
+
+(* pop_n [1; 2; 3; 4; 5] 2 = ([2; 1], [3; 4; 5])*)
+let pop_n l n = 
+    List.fold_left (fun (remaining, taken) _ -> 
+    (drop_fst remaining, (List.hd remaining) :: taken)
+    ) (l, []) (List.init n (fun _ -> ()))
+
+(*== Conversion between different type representations ==*)
+(* TODO: is there any way to deal with overlaping enums in a less painful way? *)
 
 let lltype_of_basic ctx (basic: java_basic_type) =
     (match basic with
@@ -43,12 +71,85 @@ let lltype_of_arrtype ctx ty =
     | `Double -> double_type
     | `Object -> pointer_type) ctx.context
 
-let slotcount_for ty = 
+let lltype_of_jvmtype ctx (ty: jvm_type) = 
     match ty with
-    | TObject _ -> 1
-    | TBasic basic -> match basic with
-        | `Int | `Short | `Char | `Byte | `Bool | `Float -> 1
-        | `Long | `Double -> 2
+    | `Object -> pointer_type ctx.context
+    | `Int2Bool -> i32_type ctx.context  (* no destinction? *)
+    | `Long -> i64_type ctx.context
+    | `Float -> float_type ctx.context
+    | `Double -> double_type ctx.context
+
+let arraytype_of_basictype (ty: java_basic_type): jvm_array_type = 
+    match ty with
+    | `Byte | `Bool -> `ByteBool
+    | `Int -> `Int
+    | `Short -> `Short
+    | `Char -> `Char
+    | `Float -> `Float
+    | `Long -> `Long
+    | `Double -> `Double
+
+let arraytype_of_valuetype ty = 
+    match ty with
+    | TObject _ -> `Object
+    | TBasic basic -> arraytype_of_basictype basic
+
+let is_float ty = 
+    match ty with
+    | `Int2Bool | `Long -> false
+    | `Float | `Double -> true
+
+let int_or_float ty if_int if_float = 
+    if is_float ty then if_float else if_int
+
+let rec inner_array_type (obj: object_type): jvm_array_type = 
+    match obj with
+    | TClass _ -> `Object
+    | TArray (TBasic b) -> arraytype_of_basictype b
+    | TArray (TObject obj2) -> inner_array_type obj2
+
+let ctype_name (ty: jvm_array_type) = 
+    match ty with
+    | `Int -> "i32"
+    | `Short -> "i16"
+    | `Char -> "u16"
+    | `ByteBool -> "i8"
+    | `Long -> "i64"
+    | `Float -> "f32"
+    | `Double -> "f64"
+    | `Object -> "objptr"
+
+let intcmp kind: Llvm.Icmp.t = 
+    match kind with
+    | `IEq | `Eq -> Eq
+    | `INe | `Ne -> Ne
+    | `ILt | `Lt -> Slt
+    | `IGe | `Ge -> Sge
+    | `IGt | `Gt -> Sgt
+    | `ILe | `Le -> Sle
+    | `AEq | `ANe | `Null | `NonNull -> todo "cmp ptr"
+
+let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t = 
+    match fcmpkind with
+    | `L -> unreachable ()
+    | `FL | `DL -> 
+        (match icmpkind with
+        | `Eq -> Oeq
+        | `Ne -> One
+        | `Lt -> Olt
+        | `Ge -> Oge 
+        | `Gt -> Ogt
+        | `Le -> Ole
+        | `Null | `NonNull -> illegal "fcmp Null/NonNull")
+    | `FG | `DG -> 
+        (match icmpkind with
+        | `Eq -> Ueq
+        | `Ne -> Une
+        | `Lt -> Ult
+        | `Ge -> Uge 
+        | `Gt -> Ugt
+        | `Le -> Ule
+        | `Null | `NonNull -> illegal "fcmp Null/NonNull")
 
 let llfunc_type ctx sign = 
     let arg_types = Array.of_list (List.map (lltype_of_valuetype ctx) (ms_args sign)) in
@@ -57,6 +158,65 @@ let llfunc_type ctx sign =
         | None -> void_type ctx.context 
     in
     function_type ret arg_types
+
+(*== Hardcoded knowledge about the bytecode format ==*)
+
+let slotcount_for ty = 
+    match ty with
+    | TObject _ -> 1
+    | TBasic basic -> match basic with
+        | `Int | `Short | `Char | `Byte | `Bool | `Float -> 1
+        | `Long | `Double -> 2
+
+(* Result is not in jvm index units. All types take one slot. *)
+let op_stack_delta op = 
+    match op with
+    | (OpArrayStore _) -> -3
+    | (OpIfCmp _) -> -2
+
+    | (OpAdd _) | (OpSub _) | (OpMult _) | (OpDiv _)| (OpRem _)
+    | (OpStore _) | (OpPutStatic _) 
+    | (OpCmp _) (* fcmp takes two but returns a value *)
+    | OpIAnd | OpLAnd | OpIOr | OpLOr | OpIXor | OpLXor | OpIUShr | OpLUShr | OpIShr | OpLShr | OpIShl | OpLShl
+    | (OpArrayLoad _)
+    | OpIf _ (* comparing to zero *)
+    -> -1
+
+    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S 
+    | (OpNeg _) | (OpIInc _) 
+    | OpGoto _
+    | OpInvalid
+    | (OpNewArray _) | OpArrayLength 
+    -> 0
+
+    | (OpLoad _) | (OpConst _) | (OpGetStatic _) -> 1
+
+    | OpReturn ty -> if ty == `Void then 0 else -1
+    | OpInvoke ((`Static _), sign) -> 
+        let ret = if (ms_rtype sign) == None then 0 else 1 in
+        ret - List.length (ms_args sign)
+    | OpAMultiNewArray (_, dim) -> 1 - dim
+    | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
+
+let inplace_stack_change op = 
+    if (op_stack_delta op) != 0 then false else
+    match op with
+    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S
+    | (OpNeg _) | (OpNewArray _) | OpArrayLength 
+    -> true
+
+    | (OpIInc _) | OpInvalid | OpReturn _ | OpGoto _ 
+    -> false
+
+    | OpInvoke ((`Static _), sign) -> 
+        let ret = if (ms_rtype sign) == None then 0 else 1 in
+        ret == List.length (ms_args sign)
+    | (OpAMultiNewArray (_, d)) -> 
+        assert (d == 1);
+        illegal "OpAMultiNewArray of dim=1"
+    | _ -> todo ("inplace_stack_change " ^ (JPrint.jopcode op))
+
+(*== Bytecode preprocessing: scan for locals and blocks ==*)
 
 (* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. 
    The list will have no duplicates. HACK: Jumps to an OpCmp are treated as a jump to the following OpIf instead. *)
@@ -89,14 +249,13 @@ let init_basic_blocks ctx func (blocks: int list): blockmap =
     let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ string_of_int index) func))) blocks in
     Hashtbl.of_seq (List.to_seq pairs)
 
-(* TODO: this should be a set now i guess*)
-type localtypemap = (int * jvm_type, jvm_type) Hashtbl.t
-let find_local_types (code: jopcode array): localtypemap =
+type localset = (int * jvm_type, unit) Hashtbl.t
+let find_locals (code: jopcode array): localset =
     let locals = Hashtbl.create 0 in
     Array.iter (fun op -> 
         match op with 
-        | OpLoad (ty, index) -> (Hashtbl.replace locals (index, ty) ty)
-        | OpStore (ty, index) -> (Hashtbl.replace locals (index, ty) ty)
+        | OpLoad (ty, index) -> (Hashtbl.replace locals (index, ty) ())
+        | OpStore (ty, index) -> (Hashtbl.replace locals (index, ty) ())
         | _ -> ()
     ) code;
     locals
@@ -108,57 +267,25 @@ let count_local_stores (code: jopcode array) =
         | OpStore (ty, index) -> 
             let prev = Option.default 0 (Hashtbl.find_opt locals (index, ty)) in
             (Hashtbl.replace locals (index, ty) (prev + 1))
-            | OpIInc (index, _) -> 
-                let prev = Option.default 0 (Hashtbl.find_opt locals (index, `Int2Bool)) in
-                (Hashtbl.replace locals (index, `Int2Bool) (prev + 1))
+        | OpIInc (index, _) -> 
+            let prev = Option.default 0 (Hashtbl.find_opt locals (index, `Int2Bool)) in
+            (Hashtbl.replace locals (index, `Int2Bool) (prev + 1))
         | _ -> ()
     ) code;
     locals
-
-let tblmap f m = Hashtbl.of_seq (Seq.map f (Hashtbl.to_seq m))
-
-let lltype_of_jvmtype ctx (ty: jvm_type) = 
-    match ty with
-    | `Object -> pointer_type ctx.context
-    | `Int2Bool -> i32_type ctx.context  (* no destinction? *)
-    | `Long -> i64_type ctx.context
-    | `Float -> float_type ctx.context
-    | `Double -> double_type ctx.context
-
-(* TODO: is there any way to deal with overlaping enums in a less painful way? *)
-let arraytype_of_basictype ty = 
-    match ty with
-    | `Byte | `Bool -> `ByteBool
-    | `Int -> `Int
-    | `Short -> `Short
-    | `Char -> `Char
-    | `Float -> `Float
-    | `Long -> `Long
-    | `Double -> `Double
-
-let arraytype_of_valuetype ty = 
-    match ty with
-    | TObject _ -> `Object
-    | TBasic basic -> arraytype_of_basictype basic
-
 
 (* A function argument can be reassigned like a local but if it isn't, don't ask for a stack slot *)
 type argplace = 
     FinalArg of llvalue (* direct value. must never be stored to. *) 
     | Mut of llvalue (* pointer to stack slot*)
 type localinfo = { place: argplace; ty: lltype; }
-type localkey = int * jvm_type
-type localmap = (localkey, localinfo) Hashtbl.t
-
+type localmap = (int * jvm_type, localinfo) Hashtbl.t
 
 let assert_mut place = 
     match place with
     | Mut ptr -> ptr
     | (FinalArg _) -> unreachable () 
 
-let args_slotcount sign = 
-    List.fold_left (fun acc ty -> acc + (slotcount_for ty)) 0 (ms_args sign)
-    
 (* Returns map of local indexes for the function arguments to thier llvm ssa. 
    ie. f(int, long, int) -> {0=%0, 1=%1, 3=%2} because longs take two slots *)
 let find_arg_locals func sign = 
@@ -173,12 +300,11 @@ let find_arg_locals func sign =
    Also copy mutable arguments to thier stack slot. *)
 let alloc_locals ctx func code sign: localmap = 
     let arg_locals = find_arg_locals func sign in
-    let types = find_local_types code.c_code in
+    let types = find_locals code.c_code in
     let stores = count_local_stores code.c_code in
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
-    tblmap (fun (info: localkey * jvm_type) -> 
-        let key = fst info in
+    tblmap (fun (key, _) -> 
         let jvmtype = snd key in
         let i = fst key in
         let ty = lltype_of_jvmtype ctx jvmtype in
@@ -200,59 +326,6 @@ let alloc_locals ctx func code sign: localmap =
         ((i, jvmtype), { place; ty; })
     ) types
 
-(* Result is not in jvm index units. All types take one slot. *)
-let op_stack_delta op = 
-    match op with
-    | (OpAdd _) | (OpSub _) | (OpMult _) | (OpDiv _)| (OpRem _) -> -1
-    | (OpStore _) | (OpPutStatic _) -> -1
-    | (OpLoad _) | (OpConst _) | (OpGetStatic _) -> 1
-    | OpReturn ty -> 
-        (match ty with
-        | `Void -> 0
-        | _ -> -1)
-    | (OpCmp _) -> -1 (* fcmp takes two but returns a value *)
-    | (OpIfCmp _) -> -2
-    | OpIf _ -> -1 (* comparing to zero *)
-    | (OpNeg _) | (OpIInc _) -> 0
-    | OpInvoke ((`Static _), sign) -> 
-        let ret = if (ms_rtype sign) == None then 0 else 1 in
-        ret - args_slotcount sign
-    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S -> 0
-    | OpInvalid -> 0
-    | (OpNewArray _) | OpArrayLength -> 0
-    | (OpArrayLoad _) -> -1
-    | (OpArrayStore _) -> -3
-    | OpGoto _ -> 0
-    | OpAMultiNewArray (_, dim) -> 1 - dim
-
-    | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
-
-let inplace_stack_change op = 
-    if (op_stack_delta op) != 0 then false else
-    match op with
-    | (OpNeg _) -> true
-    | (OpIInc _) -> false
-    | OpInvoke ((`Static _), sign) -> 
-        let ret = if (ms_rtype sign) == None then 0 else 1 in
-        ret == (args_slotcount sign)
-    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S -> true
-    | OpInvalid -> false
-    | (OpNewArray _) | OpArrayLength -> true
-    | OpReturn _ -> false
-    | OpGoto _ -> false
-    | (OpAMultiNewArray (_, d)) -> 
-        assert (d == 1);
-        illegal "OpAMultiNewArray of dim=1"
-
-    | _ -> todo ("inplace_stack_change " ^ (JPrint.jopcode op))
-
-(* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
-let rec sliding_pairs (l: 'a list) =
-    match l with
-    | a :: [b] -> [(a, b)]
-    | a :: (b :: rest) -> (a, b) :: (sliding_pairs rest)
-    | _ -> []
-
 (* It seems javac doesn't generate code that would return false here which is very convient. (Except for ternary operator)*)
 let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     let starts = List.sort compare block_starts in
@@ -268,6 +341,43 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     in
     List.fold_left (fun prev (start, last) -> prev && (block_comptime_safe start last)) (true) block_ranges 
 
+(*== C runtime intrinsics ==*)
+
+type rt_intrinsic = (* Represents a callable function in runtime.c *)
+| ArrLen
+| ArrInit of jvm_array_type 
+| ArrGet of jvm_array_type 
+| ArrSet of jvm_array_type 
+| ArrFillMulti of jvm_array_type
+
+(* Any changes in runtime.c must be reflected here. *)
+let intrinsic_signature ctx op = 
+    let arr_t = pointer_type ctx.context in
+    let i_t = i32_type ctx.context in
+
+    let (name, args, ret) = match op with
+        | ArrInit ty -> "array_init_" ^ (ctype_name ty), [i_t], arr_t
+        | ArrGet ty -> "array_get_" ^ (ctype_name ty), [arr_t; i_t], lltype_of_arrtype ctx ty
+        | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
+        | ArrLen -> "array_length", [arr_t], i_t
+        | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
+    in
+    (name, args, ret)
+
+let get_rtintrinsic ctx memo op =
+    match Hashtbl.find_opt memo op with
+    | Some f -> f 
+    | None -> (* First time calling, need to forward declare it. *)
+
+    let (name, args, ret) = intrinsic_signature ctx op in
+    let func_ty = function_type ret (Array.of_list args) in
+    let v = declare_function name func_ty ctx.the_module in
+    let f = (func_ty, v) in 
+    Hashtbl.replace memo op f;
+    f
+
+(*== Emiting llvm ir for a single method ==*)
+
 let load_local ctx i (locals: localmap) = 
     let local = Hashtbl.find locals i in
     match local.place with
@@ -279,33 +389,12 @@ let store_local ctx i (locals: localmap) v =
     let _ = build_store v local_ptr ctx.builder in 
     ()
 
-let drop_fst l = 
-    match l with 
-    | [] -> illegal "drop_fst empty"
-    | _ :: rest -> rest
-
-(* pop_n [1; 2; 3; 4; 5] 2 = ([2; 1], [3; 4; 5])*)
-let pop_n l n = 
-    List.fold_left (fun (remaining, taken) _ -> 
-    (drop_fst remaining, (List.hd remaining) :: taken)
-    ) (l, []) (List.init n (fun _ -> ()))
-
 let bin_op (f: llvalue -> llvalue -> llvalue) compstack = 
     if List.length compstack < 2 then illegal "Stack underflow on bin_op";
     let a = List.nth compstack 0 in
     let b = List.nth compstack 1 in
     (* Argument order matters for sub/div/rem *)
     (f b a) :: (drop_fst (drop_fst compstack))
-
-let intcmp kind: Llvm.Icmp.t = 
-    match kind with
-    | `IEq | `Eq -> Eq
-    | `INe | `Ne -> Ne
-    | `ILt | `Lt -> Slt
-    | `IGe | `Ge -> Sge
-    | `IGt | `Gt -> Sgt
-    | `ILe | `Le -> Sle
-    | `AEq | `ANe | `Null | `NonNull -> todo "cmp ptr"
 
 let emit_const ctx (v: jconst): llvalue = 
     match v with
@@ -327,89 +416,6 @@ let emit_const2 ctx (v: constant_attribute): llvalue =
     | `Double n -> const_float (double_type ctx.context) n
     | `String _ -> todo "constant string"
 
-let assert_empty l = if not (List.length l == 0) then illegal "Expected list to be empty" else l
-
-let is_float ty = 
-    match ty with
-    | `Int2Bool | `Long -> false
-    | `Float | `Double -> true
-
-let int_or_float ty if_int if_float = 
-    if is_float ty then if_float else if_int
-
-let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t = 
-    match fcmpkind with
-    | `L -> unreachable ()
-    | `FL | `DL -> 
-        (match icmpkind with
-        | `Eq -> Oeq
-        | `Ne -> One
-        | `Lt -> Olt
-        | `Ge -> Oge 
-        | `Gt -> Ogt
-        | `Le -> Ole
-        | `Null | `NonNull -> illegal "fcmp Null/NonNull")
-    | `FG | `DG -> 
-        (match icmpkind with
-        | `Eq -> Ueq
-        | `Ne -> Une
-        | `Lt -> Ult
-        | `Ge -> Uge 
-        | `Gt -> Ugt
-        | `Le -> Ule
-        | `Null | `NonNull -> illegal "fcmp Null/NonNull")
-
-let ctype_name (ty: jvm_array_type) = 
-    match ty with
-        | `Int -> "i32"
-        | `Short -> "i16"
-        | `Char -> "u16"
-        | `ByteBool -> "i8"
-        | `Long -> "i64"
-        | `Float -> "f32"
-        | `Double -> "f64"
-        | `Object -> "objptr"
-                
-(* Represents a callable function in the runtime.c *)
-type rt_intrinsic = 
-    | ArrLen
-    | ArrInit of jvm_array_type 
-    | ArrGet of jvm_array_type 
-    | ArrSet of jvm_array_type 
-    | ArrFillMulti of jvm_array_type
-
-(* This must match with a function in runtime.c *)
-let intrinsic_signature ctx op = 
-    let arr_t = pointer_type ctx.context in
-    let i_t = i32_type ctx.context in
-
-    let (name, args, ret) = match op with
-        | ArrInit ty -> "array_init_" ^ (ctype_name ty), [i_t], arr_t
-        | ArrGet ty -> "array_get_" ^ (ctype_name ty), [arr_t; i_t], lltype_of_arrtype ctx ty
-        | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
-        | ArrLen -> "array_length", [arr_t], i_t
-        | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
-    in
-    (name, args, ret)
-
-let get_rtintrinsic ctx memo op =
-    match Hashtbl.find_opt memo op with
-    | Some f -> f 
-    | None -> (* First time calling, need to forward declare it. *)
-    
-    let (name, args, ret) = intrinsic_signature ctx op in
-    let func_ty = function_type ret (Array.of_list args) in
-    let v = declare_function name func_ty ctx.the_module in
-    let f = (func_ty, v) in 
-    Hashtbl.replace memo op f;
-    f
-
-let rec inner_array_type (obj: object_type): jvm_array_type = 
-    match obj with
-    | TClass _ -> `Object
-    | TArray (TBasic b) -> arraytype_of_basictype b
-    | TArray (TObject obj2) -> inner_array_type obj2
-
 let convert_method ctx code current_sign funcmap fieldsmap intrinsics = 
     let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
     let ret_ty = ms_rtype current_sign in
@@ -423,7 +429,25 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
     let first = Hashtbl.find basic_blocks 0 in
     let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
 
-    let emit_op ctx (compstack: llvalue list) op index prev_op: llvalue list = 
+    let do_cast f out s = 
+        let v = List.nth s 0 in
+        let res = f v (out ctx.context) "" ctx.builder in
+        res :: drop_fst s
+    in
+    let cmp f k s =
+        let a = List.nth s 0 in
+        let b = List.nth s 1 in
+        (f k b a "" ctx.builder), (drop_fst (drop_fst s))
+    in
+    let call_intin intrin in_stack = 
+        let f = get_rtintrinsic ctx intrinsics intrin in 
+        let arg_count = Array.length (param_types (fst f)) in
+        let (stack, args) = pop_n in_stack arg_count in
+        let ret = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
+        (ret, stack)
+    in
+
+    let emit_op compstack op index prev_op = 
         (match Hashtbl.find_opt basic_blocks index with
         | Some bb -> 
             let current = insertion_block ctx.builder in
@@ -437,27 +461,6 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
         );
 
         let do_bin f = bin_op (fun a b -> f a b "" ctx.builder) compstack in 
-        let do_cast f out s = 
-            let v = List.nth s 0 in
-            let res = f v (out ctx.context) "" ctx.builder in
-            res :: drop_fst s
-        in
-
-        let cmp f k s =
-            let a = List.nth s 0 in
-            let b = List.nth s 1 in
-            (f k b a "" ctx.builder), (drop_fst (drop_fst s))
-        in
-
-        let pre (x, xs) = x :: xs in
-        let call_intin intrin in_stack = 
-            let f = get_rtintrinsic ctx intrinsics intrin in 
-            let arg_count = Array.length (param_types (fst f)) in
-            let (stack, args) = pop_n in_stack arg_count in
-            let ret = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
-            (ret, stack)
-        in
-
         match op with
         | OpLoad (ty, i) -> load_local ctx (i, ty) locals :: compstack
         | OpStore (ty, i) -> 
@@ -614,11 +617,13 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
     
     let _ = Array.fold_left
     (fun (stack, index, prev_op) op ->
-        let new_stack = emit_op ctx stack op index prev_op in
+        let new_stack = emit_op stack op index prev_op in
         (new_stack, index + 1, (Some op))
     ) ([], 0, None) code.c_code in
 
     ()
+
+(*== Walking classes to find code ==*)
 
 let emit_method ctx m funcmap fieldsmap intrinsics = 
     match m with
@@ -630,9 +635,6 @@ let emit_method ctx m funcmap fieldsmap intrinsics =
                 let jcode = Lazy.force code in
                     convert_method ctx jcode func.cm_signature funcmap fieldsmap intrinsics
         )
-
-let replace_chars s before after = 
-    String.map (fun c -> if String.contains before c then after else c) s
 
 let forward_declare_method ctx m = 
     match m with

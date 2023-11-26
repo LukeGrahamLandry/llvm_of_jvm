@@ -11,7 +11,7 @@ typedef struct AnyArray {
 i32 array_length(AnyArray* arr) { 
     assert(arr != NULL);                 
     return arr->length;                  
-}   
+}
 
 // hehe template goes brrr.
 #define generic_array(ty) \
@@ -44,6 +44,7 @@ i32 array_length(AnyArray* arr) {
         arr->data[i] = v;                                  \
     }                                                      \
     \
+    /* TODO: needing to call this once for each layer instead of just doing it as you recurse down is dumb. take a list of lengths */\
     /* its silly that i ordered these backwards because of stack order in the compiler */\
     Array_objptr* array_fillmulti_##ty(i32 inner_len, Array_objptr* outer, i32 depth) {\
         assert(outer != NULL && inner_len >= 0);\

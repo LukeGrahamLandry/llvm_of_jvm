@@ -1,16 +1,13 @@
-## Arrays (Nov 24)
+## Why C
 
-I can't decide if its better to just generate ir directly for array operations or write some functions in c and just call them as needed. 
+- clang knows it so can just run it on both runtime and generated ir together and not depend on yet another compiler. 
+- pretty much anything else would at the very least make me deal with someone else's name mangling
+    - c++ templates don't have a stable ABI (and c++ doesn't spark joy either)
+    - zig comptime doesn't have a stable ABI 
+        - tho maybe use it to generate @export c functions
+    - rust generics don't have a stable ABI
 
-
-Really annoying like 40 lines of setting up the function forward declarations in llvm for all the types of array. 
-Now a bunch of tedius calling the functions. There's just so many stupid conversions. 
-OpNewArray's arg is a value_type (which I thought they'd all be so used to key my map) but 
-OpArrayStore's arg is a jvm_array_type which is the same but all object types are uniform and bool=byte. 
-That's really a pattern with the library I'm using for the parsing bytecode. 
-They want to be all type safe and correct in reflecting the jvm spec but it means I have to do so many inane type conversions for slightly different representations. 
-Pleasingly the argument order on the stack is the intuitive one I assumed for my functions before I looked. 
-Should lazily forward declare the array functions only if they're actually called cause its annoying to see them all at the top of the ir. 
+## More Arrays (Nov 25)
 
 Something fucked up where it works if you declare the accumulator at the top but not between loops. 
 It's trying to read var2_acc for the for loop counter instead of var4_i?
@@ -24,6 +21,23 @@ It must be reusing the slot because thier lifetimes don't overlap. The loop coun
 So then do I have to key local variables by index and type? OpIInc doesn't have a type, hopefully only used on ints? 
 
 Now instead of tracking (local_index -> llvalue), have ((local_index, local_type) -> llvalue) and hope that javac made everything work out so they don't overlap and it can't tell they're actually in different places and then that llvm puts them back together to the same place in the end if that's actually the right choice. 
+
+Multidimensional arrays have thier own opcode instead of just generating a loop in bytecode (or even a function call to some builtin thing). Seems a little weird to me, like why is that such a core operation you'll be doing so often that it needs its own opcode.
+
+## Arrays (Nov 24)
+
+I can't decide if its better to just generate ir directly for array operations OR write some functions in c and just call them as needed. 
+And then I don't know if its better to have one array type that just has a `char*` and then dynamically do the right thing since you know the size of the type when you init/load/store OR use a macro as a template to generate new types and functions for each primitive type. 
+Doing the macro thing would probably make it less of a pain to consume from other native code if you want that to interact with your newly compiled java program which seems like an interesting usecase. 
+
+Really annoying like 40 lines of setting up the function forward declarations in llvm for all the types of array. 
+Now a bunch of tedius calling the functions. There's just so many stupid conversions. 
+OpNewArray's arg is a value_type (which I thought they'd all be so used to key my map) but 
+OpArrayStore's arg is a jvm_array_type which is the same but all object types are uniform and bool=byte. 
+That's really a pattern with the library I'm using for the parsing bytecode. 
+They want to be all type safe and correct in reflecting the jvm spec but it means I have to do so many inane type conversions for slightly different representations. 
+Pleasingly the argument order on the stack is the intuitive one I assumed for my functions before I looked. 
+Should lazily forward declare the array functions only if they're actually called cause its annoying to see them all at the top of the ir. 
 
 ## More Tests (Nov 24)
 

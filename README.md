@@ -16,7 +16,8 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - Comparison on all primitive types (==, !=, >=, <=, <, >)
 - Jumps (If, IfCmp): ifs, while/for loops
 - Casts between primitive types
-- Static methods, fields, initializer blocks, and native methods. 
+- Static methods, fields, initializer blocks, and native methods
+- Arrays and multidimensional arrays
 
 ### Incomplete
 
@@ -28,6 +29,8 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - overloaded functions name mangling 
 - automaticlly call `_clinit_` on every class that needs it
 - figure out what a `char` is
+- garbage collection 
+- exceptions instead of assertions for bounds checks 
 
 ## Libraries Used 
 
