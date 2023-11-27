@@ -60,7 +60,7 @@ let lltype_of_basic ctx (basic: java_basic_type) =
 
 let lltype_of_valuetype ctx ty = 
     match ty with
-    | TObject _ -> todo "TObject"
+    | TObject _ -> pointer_type ctx.context
     | TBasic basic -> lltype_of_basic ctx basic
 
 let lltype_of_arrtype ctx ty = 
@@ -200,32 +200,13 @@ let op_stack_delta op =
     | OpAMultiNewArray (_, dim) -> 1 - dim
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
-(* TODO: This is still wrong. An op that pops 2 then pushes 3 mutates the stack but I'd see it as net pushing 1 so think its fine. 
-         Should split op_stack_delta into op_count_pops and op_count_pushes so this becomes obvious. *)
-let inplace_stack_change op = 
-    if (op_stack_delta op) != 0 then false else
-    match op with
-    | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S
-    | (OpNeg _) | (OpNewArray _) | OpArrayLength 
-    -> true
-
-    | (OpIInc _) | OpInvalid | OpReturn _ | OpGoto _ 
-    -> false
-
-    | OpInvoke ((`Static _), sign) -> 
-        let ret = if (ms_rtype sign) == None then 0 else 1 in
-        ret == List.length (ms_args sign)
-    | (OpAMultiNewArray (_, d)) -> 
-        assert (d == 1);
-        illegal "OpAMultiNewArray of dim=1"
-    | _ -> todo ("inplace_stack_change " ^ (JPrint.jopcode op))
 
 (*== Bytecode preprocessing: scan for locals and blocks ==*)
 
 (* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. 
    The list will have no duplicates. HACK: Jumps to an OpCmp are treated as a jump to the following OpIf instead. *)
 let find_basic_blocks (code: jopcode array): int list =
-    let rec add_target l i = 
+    let rec add_target l i = (* TODO: should sort here instead of later *)
         if List.exists ((=) i) l then l else 
             let target_fcmp = match Array.get code i with | (OpCmp _) -> true | _ -> false in
             let next_if = i + 1 < (Array.length code) && match Array.get code (i + 1) with | (OpIf _) -> true | _ -> false in
@@ -233,19 +214,19 @@ let find_basic_blocks (code: jopcode array): int list =
             let prev_fcmp = i != 0 && match Array.get code (i - 1) with | (OpCmp _) -> true | _ -> false in
             if target_if && prev_fcmp then illegal "jumped directly to OpIf after fcmp";
             if target_fcmp && next_if then (add_target l (i + 1)) else i :: l
-        in
-
-    (fst (Array.fold_left
-        (fun (blocks, index) op ->
-            let new_blocks = match op with
+    in
+    let rec iter_block blocks index = 
+        let op = Array.get code index in
+        let blocks = match op with
             | OpIf (_, i) 
             | OpIfCmp (_, i) (* conditional jump can fall through. represent that as jumping to the next instruction *)
                 -> add_target (add_target blocks (index + i)) (index + 1) 
             | OpGoto i 
                 -> add_target blocks (index + i)
             | _ -> blocks in
-            (new_blocks, index + 1)
-        ) ([0], 0) code))
+        if index < Array.length code - 1 then iter_block blocks (index + 1) else blocks
+    in
+    iter_block [0] 0
 
 type blockmap = (int, llbasicblock) Hashtbl.t
 
@@ -253,27 +234,20 @@ let init_basic_blocks ctx func (blocks: int list): blockmap =
     let pairs = List.map (fun index -> (index, (append_block ctx.context ("op" ^ string_of_int index) func))) blocks in
     Hashtbl.of_seq (List.to_seq pairs)
 
-type localset = (int * jvm_type, unit) Hashtbl.t
-let find_locals (code: jopcode array): localset =
-    let locals = Hashtbl.create 0 in
-    Array.iter (fun op -> 
-        match op with 
-        | OpLoad (ty, index) -> (Hashtbl.replace locals (index, ty) ())
-        | OpStore (ty, index) -> (Hashtbl.replace locals (index, ty) ())
-        | _ -> ()
-    ) code;
-    locals
-
 let count_local_stores (code: jopcode array) =
     let locals = Hashtbl.create 0 in
+    let maybe_init key = 
+        if Hashtbl.find_opt locals key == None then (Hashtbl.replace locals key 0)
+    in
+    let inc key = 
+        let prev = Option.default 0 (Hashtbl.find_opt locals key) in
+        (Hashtbl.replace locals key (prev + 1))
+    in
     Array.iter (fun op -> 
         match op with 
-        | OpStore (ty, index) -> 
-            let prev = Option.default 0 (Hashtbl.find_opt locals (index, ty)) in
-            (Hashtbl.replace locals (index, ty) (prev + 1))
-        | OpIInc (index, _) -> 
-            let prev = Option.default 0 (Hashtbl.find_opt locals (index, `Int2Bool)) in
-            (Hashtbl.replace locals (index, `Int2Bool) (prev + 1))
+        | OpLoad (ty, index) -> maybe_init (index, ty)
+        | OpStore (ty, index) -> inc (index, ty)
+        | OpIInc (index, _) -> inc (index, `Int2Bool)
         | _ -> ()
     ) code;
     locals
@@ -304,15 +278,13 @@ let find_arg_locals func sign =
    Also copy mutable arguments to thier stack slot. *)
 let alloc_locals ctx func code sign: localmap = 
     let arg_locals = find_arg_locals func sign in
-    let types = find_locals code.c_code in
-    let stores = count_local_stores code.c_code in
+    let local_stores = count_local_stores code.c_code in
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
-    tblmap (fun (key, _) -> 
+    tblmap (fun (key, stores) -> 
         let jvmtype = snd key in
         let i = fst key in
         let ty = lltype_of_jvmtype ctx jvmtype in
-        let stores = Option.default 0 (Hashtbl.find_opt stores key) in
         let place = if stores > 0 then 
             let name = "var" ^ (string_of_int i) ^ "_" in
             let ptr = build_alloca ty name ctx.builder in
@@ -320,7 +292,7 @@ let alloc_locals ctx func code sign: localmap =
             | Some ssa -> (* its an argument. copy it to its stack slot*)
                 let _ = build_store ssa ptr ctx.builder in 
                 ()
-            | None -> () (* it's not an argument. no initial value. (TODO: zero?)*)
+            | None -> () (* it's not an argument. no initial value. *)
             );
             Mut ptr
         else (* if it's never stored, it must be a function argument *)
@@ -328,26 +300,26 @@ let alloc_locals ctx func code sign: localmap =
             FinalArg ssa 
         in
         ((i, jvmtype), { place; ty; })
-    ) types
+    ) local_stores
 
-(* TODO: write some simple tests for this function because its scary and important. *)
 (* It seems javac doesn't generate code that would return false here which is very convient. (Except for ternary operator)*)
 let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     let starts = List.sort compare block_starts in
     let block_ranges = sliding_pairs (List.concat [starts; [Array.length code]]) in
-    let block_comptime_safe start last =
-        let (_, res, stack) = Array.fold_left (fun (index, safe, stack) op -> 
-            if ((index < start) || (index >= last)) then (index + 1, safe, stack) else 
-            if stack == 0 && (inplace_stack_change op) then (index + 1, false, stack) else
-            let new_stack = stack + op_stack_delta op in
-            (index + 1, (safe && new_stack >= 0), new_stack)
-        ) (0, true, 0) code in
-        res && stack == 0
-    in
-    List.fold_left (fun prev (start, last) -> prev && (block_comptime_safe start last)) (true) block_ranges 
 
-(* TODO: this should go in test exe instead of here. *)
-let () = (* test_stack_comptime_safe *)
+    let rec block_safe start last stack = 
+        let op = Array.get code start in
+        let new_stack = stack + op_stack_delta op in
+        new_stack >= 0 && if start < last - 1 then (block_safe (start + 1) last new_stack) else (new_stack == 0)
+    in
+    let rec safe = function 
+        | [] -> true
+        | (a, b) :: rest -> (block_safe a b 0) && safe rest 
+    in
+    safe block_ranges 
+
+(* TODO: dont like this *)
+let () = 
     let expect_no ops = 
         let l = Array.of_list ops in
         assert (not (stack_comptime_safe (find_basic_blocks l) l)) in
@@ -358,7 +330,9 @@ let () = (* test_stack_comptime_safe *)
     expect_no [ (* negate mutates stack in place *)
         OpLoad (`Int2Bool, 0); OpIf (`Ge, 4); OpInvalid; OpInvalid; OpNeg `Int2Bool; OpReturn `Int2Bool;
     ];
-    
+    expect_no [ (* array load pops 2 pushes 1 *)
+        OpLoad (`Int2Bool, 0); OpLoad (`Int2Bool, 1); OpIf (`Ge, 5); OpInvalid; OpInvalid; OpLoad (`Object, 2); OpArrayLoad `Int; OpReturn `Int2Bool;
+    ];
     ()
 
 (*== Runtime intrinsics ==*)
@@ -425,17 +399,6 @@ let emit_const ctx (v: jconst): llvalue =
     | `Double n -> const_float (double_type ctx.context) n
     | _ -> todo "emit_const other types"
 
-(* TODO: Can I combine this with the above?
-         Maybe don't even need this because its only used for static fields 
-         but they seem to use a static block instead of cf_value*)
-let emit_const2 ctx (v: constant_attribute): llvalue = 
-    match v with
-    | `Int n -> const_int (i32_type ctx.context) (Int32.to_int n)
-    | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
-    | `Float n -> const_float (float_type ctx.context) n
-    | `Double n -> const_float (double_type ctx.context) n
-    | `String _ -> todo "constant string"
-
 let total_seen = ref 0  (* TODO: can remove. was just curious *)
 
 let convert_method ctx code current_sign funcmap fieldsmap intrinsics = 
@@ -475,10 +438,10 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
         (match Hashtbl.find_opt basic_blocks index with
         | Some bb -> (* entering a new block *)
             let current = insertion_block ctx.builder in
+            let _ = assert_empty compstack in
             (match block_terminator current with 
             | Some _ -> () (* last instruction was a jump *)
             | None -> 
-                let _ = assert_empty compstack in
                 let _ = build_br bb ctx.builder in ()); (* this is the head of a loop so fallthrough *)
             position_at_end bb ctx.builder (* either way start writing the new block*)
         | None -> () (* continue the previous block*)
@@ -593,7 +556,9 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
             if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
 
         | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
-            (match (Array.get code.c_code (index + 1)) with (* TODO: pass next_op to emit_op if i start using it for anything *)
+            (* TODO: pass next_op to emit_op if i start using it for anything *)
+            let next_op = Array.get code.c_code (index + 1) in 
+            (match next_op with 
             | (OpIf _) -> compstack 
             | _ -> illegal "OpCmp must be followed by OpIf")
 
@@ -639,14 +604,13 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
         | (OpRet _) | (OpJsr _ ) -> illegal ((JPrint.jopcode op) ^ " was deprecated in Java 7.")
         | _ -> todo ("emit_op " ^ JPrint.jopcode op)
         in
-    
-    let _ = Array.fold_left
-    (fun (stack, index, prev_op) op ->
-        let new_stack = emit_op stack op index prev_op in
-        (new_stack, index + 1, (Some op))
-    ) ([], 0, None) code.c_code in
 
-    ()
+    let rec loop stack index prev_op = 
+        let op = Array.get code.c_code index in
+        let new_stack = emit_op stack op index prev_op in
+        if index < Array.length code.c_code - 1 then loop new_stack (index + 1) (Some op) else ()
+    in
+    loop [] 0 None
 
 (*== Walking classes to find code ==*)
 
@@ -674,12 +638,10 @@ let emit_static_field ctx anyfield =
     | InterfaceField _ -> todo "interface static field"
     | ClassField field -> 
         assert field.cf_static;
+        assert (field.cf_value == None);  (* Seems to always use <clinit> *)
         let ty = lltype_of_valuetype ctx (fs_type field.cf_signature) in
         let name = fs_name field.cf_signature in (* TODO: include class in name *)
-        let init_val = (match field.cf_value with
-        | None -> const_int ty 0
-        | Some init -> emit_const2 ctx init (* TODO: maybe never happens*)
-        ) in
+        let init_val = const_int ty 0 in
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
 
@@ -700,7 +662,9 @@ let () =
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
     
-    let path = class_path "./java:./out/java" in
+    (* TODO: don't just hardcode the path lol *)
+    (* TODO: past java 8 need to figure out what to do with a jmod file *)
+    let path = class_path "./java:./out/java" in (* :/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib *)
     let intrinsics = Hashtbl.create 0 in
     List.iter (fun name -> 
         let cls = get_class path (make_cn name) in

@@ -1,3 +1,28 @@
+## Objects
+
+The natural trick to representing inheritance is just having the first field be the super class, same as how im doing arrays. 
+But having the objptr type be some real type instead of a void* means you get `warning: incompatible pointer types` for upcasting 
+
+## Thinking about tests
+
+stack_comptime_safe: 
+(* TODO: Should go in test exe instead but that commits to splitting most into lib. 
+         Also this is the kind of tiny test I dislike (tightly coupled to implementation). *)
+(* TODO: actually these aren't even testing what I mean to, just the `&& stack == 0` at the very end.
+         since you look at each block individually, the first one that leaves info on the stack to pass to others is illegal 
+         so the check is doing a bunch of extra work for no reason.
+         my rule's not just that forks can't change the stack, its that the entry can't either.
+         the compiler doesn't save the stack before branching away so the real limitation is they can't modify it
+         but ive implemented that as forcing it to be empty when you jump away *)
+
+inplace_stack_change:
+(* TODO: This is still wrong. An op that pops 2 then pushes 3 mutates the stack. Maybe no instruction does that? 
+         Should split op_stack_delta into op_count_pops and op_count_pushes so this becomes obvious.
+         More importantly, I have a stricter restriction so this is unnecessary *)
+
+
+Kinda cool that you can use `(func_name [@tailcall]) args` to assert that a recursive function uses constant stack space. 
+
 ## Why C
 
 - clang knows it so can just run it on both runtime and generated ir together and not depend on yet another compiler. 
