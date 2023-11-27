@@ -3,6 +3,14 @@
 The natural trick to representing inheritance is just having the first field be the super class, same as how im doing arrays. 
 But having the objptr type be some real type instead of a void* means you get `warning: incompatible pointer types` for upcasting 
 
+Think this is the point where it makes sense to do a little name mangling to avoid conflicts. Just prefix the package and class name on every function. Its a little sad tho cause it makes the test program more verbose. 
+I'm using underscores instead of dots in package because I want to be able to refer to them from c but it means they could still technically overlap like `a.b.c.java` and `a.b_c.java` both use `a_b_c` as thier prefix. 
+
+The GenericMapSig in javalib would be so convient but it doesnt have an optional get method? 
+
+Could have a compiler flag for release builds that treat `@NonNull` as an assertion and emit as a poison value? 
+There's also https://llvm.org/docs/FaultMaps.html which looks interesting. 
+
 ## Thinking about tests
 
 stack_comptime_safe: 

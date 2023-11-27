@@ -370,6 +370,74 @@ let get_rtintrinsic ctx memo op =
     Hashtbl.replace memo op f;
     f
 
+(*== Lazily forward declare functions ==*)
+
+let forward_declare_method ctx m = 
+    match m with
+    | AbstractMethod _ -> todo "AbstractMethod"
+    | ConcreteMethod func ->
+        let sign = func.cm_signature in
+        let cls = fst (cms_split func.cm_class_method_signature) in
+        let name = (cn_name cls) ^ "_" ^ (ms_name sign) in
+        let name = replace_chars name "><." '_' in
+        declare_function name (llfunc_type ctx sign) ctx.the_module
+
+let emit_static_field ctx anyfield = 
+    match anyfield with
+    | InterfaceField _ -> todo "interface static field"
+    | ClassField field -> 
+        assert field.cf_static;
+        assert (field.cf_value == None);  (* Seems to always use <clinit> *)
+        let ty = lltype_of_valuetype ctx (fs_type field.cf_signature) in
+        let cls = fst (cfs_split field.cf_class_signature) in
+        let name = replace_chars (cn_name cls) "." '_' in
+        let name = name ^ "_" ^ (fs_name field.cf_signature) in 
+        let init_val = const_int ty 0 in
+        let v = define_global name init_val ctx.the_module in
+        { place=Mut v; ty }
+
+type compilation = {
+    classes: class_path;
+    intrinsics: (rt_intrinsic, lltype * llvalue) Hashtbl.t;
+    func_queue: (class_method_signature, llvalue) Hashtbl.t; (* referenced but not yet compiled *)
+    funcs_done: (class_method_signature, llvalue) Hashtbl.t; (* already compiled *)
+    globals: (class_field_signature, localinfo) Hashtbl.t; (* static fields *)
+}
+
+let method_of_cms classes sign = 
+    let (cs, ms) = cms_split sign in
+    let cls = get_class classes cs in
+    get_method cls ms
+
+let field_of_cfs classes sign = 
+    let (cs, fs) = cfs_split sign in
+    let cls = get_class classes cs in
+    get_field cls fs
+
+(* TODO: its a bit unserious for every method call to be two lookups *)
+let find_func ctx comp sign = 
+    match Hashtbl.find_opt comp.funcs_done sign with
+    | Some f -> f
+    | None -> (* haven't compiled yet *)
+    match Hashtbl.find_opt comp.func_queue sign with
+    | Some f -> f
+    | None -> (* haven't seen yet *)
+
+    let m = method_of_cms comp.classes sign in
+    let func = forward_declare_method ctx m in
+    Hashtbl.replace comp.func_queue sign func;
+    func
+
+let find_global ctx comp sign = 
+    match Hashtbl.find_opt comp.globals sign with
+    | Some f -> f
+    | None -> (* haven't seen yet *)
+
+    let field = field_of_cfs comp.classes sign in
+    let global = emit_static_field ctx field in
+    Hashtbl.replace comp.globals sign global;
+    global
+
 (*== Emiting llvm ir for a single method ==*)
 
 let load_local ctx i (locals: localmap) = 
@@ -401,8 +469,9 @@ let emit_const ctx (v: jconst): llvalue =
 
 let total_seen = ref 0  (* TODO: can remove. was just curious *)
 
-let convert_method ctx code current_sign funcmap fieldsmap intrinsics = 
-    let func = MethodMap.find current_sign funcmap in (* bro why did you make it (key, map) instead of (map, key)*)
+let convert_method ctx code current_cms comp = 
+    let current_sign = snd (cms_split current_cms) in
+    let func = find_func ctx comp current_cms in 
     let ret_ty = ms_rtype current_sign in
 
     let block_positions = find_basic_blocks code.c_code in
@@ -425,7 +494,7 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
         (f k b a "" ctx.builder), (drop_fst (drop_fst s))
     in
     let call_intin intrin in_stack = 
-        let f = get_rtintrinsic ctx intrinsics intrin in 
+        let f = get_rtintrinsic ctx comp.intrinsics intrin in 
         let arg_count = Array.length (param_types (fst f)) in
         let (stack, args) = pop_n in_stack arg_count in
         let ret = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
@@ -546,11 +615,12 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
             do_cast build_sext i32_type stack
         | OpI2C -> todo "what's a char?"
 
-        | OpInvoke ((`Static (_ioc, _classname)), target_sign) -> 
+        | OpInvoke ((`Static (_ioc, classname)), target_sign) -> 
             if List.length (ms_args target_sign) > List.length compstack 
                 then illegal ("stack underflow calling " ^ (ms_name target_sign) ^ " from " ^ (ms_name current_sign));
             let func_ty = llfunc_type ctx target_sign in
-            let func_value = MethodMap.find target_sign funcmap in 
+            let cms = make_cms classname target_sign in
+            let func_value = find_func ctx comp cms in 
             let (new_stack, arg_values) = pop_n compstack (List.length (ms_args target_sign)) in
             let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
             if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
@@ -562,14 +632,16 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
             | (OpIf _) -> compstack 
             | _ -> illegal "OpCmp must be followed by OpIf")
 
-        | OpGetStatic (_, field_sign) -> (* TODO: multiple classes *)
-            let global = FieldMap.find field_sign fieldsmap in
+        | OpGetStatic (classname, field_sign) ->
+            let cfs = make_cfs classname field_sign in
+            let global = find_global ctx comp cfs in
             let ptr = assert_mut global.place in
             let v = build_load global.ty ptr "" ctx.builder in
             v :: compstack
 
-        | OpPutStatic (_, field_sign) ->
-            let global = FieldMap.find field_sign fieldsmap in
+        | OpPutStatic (classname, field_sign) ->
+            let cfs = make_cfs classname field_sign in
+            let global = find_global ctx comp cfs in
             let ptr = assert_mut global.place  in
             let _ = build_store (List.hd compstack) ptr ctx.builder in
             drop_fst compstack
@@ -614,62 +686,60 @@ let convert_method ctx code current_sign funcmap fieldsmap intrinsics =
 
 (*== Walking classes to find code ==*)
 
-let emit_method ctx m funcmap fieldsmap intrinsics = 
+let emit_method ctx m comp = 
     match m with
     | AbstractMethod _ -> todo "AbstractMethod"
     | ConcreteMethod func ->
         (match func.cm_implementation with
-            | Native -> ()
+            | Native -> 
+                let _ = find_func ctx comp func.cm_class_method_signature in
+                ()
             | Java code ->
                 let jcode = Lazy.force code in
-                    convert_method ctx jcode func.cm_signature funcmap fieldsmap intrinsics
-        )
+                convert_method ctx jcode func.cm_class_method_signature comp
+        );
+        
+        let ll = Hashtbl.find comp.func_queue func.cm_class_method_signature in
+        Hashtbl.remove comp.func_queue func.cm_class_method_signature;
+        Hashtbl.replace comp.funcs_done func.cm_class_method_signature ll;
+        ()
 
-let forward_declare_method ctx m = 
-    match m with
-    | AbstractMethod _ -> todo "AbstractMethod"
-    | ConcreteMethod func ->
-        let sign = func.cm_signature in
-        let name = replace_chars (ms_name sign) "><" '_' in
-        declare_function name (llfunc_type ctx sign) ctx.the_module
-
-let emit_static_field ctx anyfield = 
-    match anyfield with
-    | InterfaceField _ -> todo "interface static field"
-    | ClassField field -> 
-        assert field.cf_static;
-        assert (field.cf_value == None);  (* Seems to always use <clinit> *)
-        let ty = lltype_of_valuetype ctx (fs_type field.cf_signature) in
-        let name = fs_name field.cf_signature in (* TODO: include class in name *)
-        let init_val = const_int ty 0 in
-        let v = define_global name init_val ctx.the_module in
-        { place=Mut v; ty }
-
-let emit_class ctx cls intrinsics = 
+let emit_class ctx cls comp = 
+    (* TODO: use comp and load lazily instead of walking everything up front *)
     let methods = MethodMap.filter is_static_method (get_methods cls) in
-    let funcmap = MethodMap.map (forward_declare_method ctx) methods in
-    let static_fields = FieldMap.filter is_static_field (get_fields cls) in
-    let fieldsmap = FieldMap.map (emit_static_field ctx) static_fields in
-
     let _ = MethodMap.map (fun m ->
-        emit_method ctx m funcmap fieldsmap intrinsics
+        emit_method ctx m comp
         ) methods in
     ()
 
 let () = 
-    let classes = drop_fst (Array.to_list Sys.argv) in
-
-    let c = create_context () in
-    let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
+    let entry_classes = drop_fst (Array.to_list Sys.argv) in
     
     (* TODO: don't just hardcode the path lol *)
     (* TODO: past java 8 need to figure out what to do with a jmod file *)
-    let path = class_path "./java:./out/java" in (* :/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib *)
-    let intrinsics = Hashtbl.create 0 in
+    let classes = class_path "./java:./out/java" in (* :/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib *)
+
+    let c = create_context () in
+    let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
+    let comp = { 
+        classes;
+        intrinsics = Hashtbl.create 0; 
+        func_queue = Hashtbl.create 0; 
+        funcs_done = Hashtbl.create 0; 
+        globals = Hashtbl.create 0; 
+    } in
+
     List.iter (fun name -> 
-        let cls = get_class path (make_cn name) in
-        emit_class ctx cls intrinsics;
-    ) classes;
+        let cls = get_class classes (make_cn name) in
+        emit_class ctx cls comp;
+    ) entry_classes;
+
+    eprintf "%s\n" (string_of_int (Hashtbl.length comp.func_queue));
+    Hashtbl.iter (fun k _v -> 
+        eprintf "hello";
+        eprintf "%s\n"  (JPrint.class_method_signature k);
+        ()) comp.func_queue;
+    (* assert (Hashtbl.length comp.func_queue == 0); *)
     
     let code = string_of_llmodule ctx.the_module in
     print_endline code;
