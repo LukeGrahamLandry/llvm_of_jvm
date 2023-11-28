@@ -1,4 +1,13 @@
-## Fields (Nov 28)
+## Dynamic Dispatch (Nov 28)
+
+For real dynamic dispatch, every object needs to start with a vtable. Struct of function pointers for function should be used for each method on this specific instance. 
+
+Problematic: you want to making the vtable at the beginning but you don't know which are going to be called yet. 
+There are some methods I choke on but don't call. So need another level of queuing where its not referenced yet but has reserved an llvalue so if it is referenced, the function will be emitted into the place already referenced by the vtable. 
+
+There's a speed/space trade off: do you make a chain of vtables that point to each other or does each subclass get a whole new one? Its such tiny space tho.
+
+## Fields & Inheritance (Nov 28)
 
 llvm tracks struct fields by index so just keep track of the (arbitrary) order I asked for. 
 Then can gep to trade a struct pointer and index for a field pointer. 
@@ -7,7 +16,8 @@ For inheritance, make a fake __parent field that's directly the super class inst
 The classfile's field list doesn't include inherited ones so that works out, each struct in the chain just adds the new stuff. To look up a field, you try to find it in your class. If its there, great, you're the first in the chain just do the thing. If its not there, access your magic parent field and then try to lookup the field on that object instead. Javac gives well typed class files so it should always work out. 
 
 Calling a method that IS NOT final but the class IS final, is also easy. You know the object you're looking at must be exactly that class (with nothing further down the chain) so can do static dispatch. Do have to carefully check up the chain since this lets you call a nonfinal on someone above you if you're final. 
-
+When a class overrides a method, it shows up in both class files, so the first one you see as you walk up is the most overriden one that should be used. 
+An obvious step would be not just relying on the final marker and just look at the classes to see if its actually used as final in that program but that sounds like a painful graph search thing where now every method call requires looking at all other code. Need to prescan everything and record for each method at what level its treated as final. 
 
 ## Objects (Nov 27)
 

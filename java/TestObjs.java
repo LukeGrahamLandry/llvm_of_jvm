@@ -18,6 +18,8 @@ public class TestObjs {
 
     public static boolean sometests() {
         if (importmebb(1) != 2) return false;
+
+        // == static dispatch == 
         if (new TestObjs(2).addFieldFinal(3) != 5) return false;
         if (new InheritedTestObjs(2).addFieldFinal(3) != 5) return false;
         if (new InheritedTestObjs(2).parentfield() != 2) return false;
@@ -26,6 +28,9 @@ public class TestObjs {
         if (new InheritedTestObjs(2).parentnonfinalbutclassfinal() != 3) return false;
         if (new InheritedTestObjs(2).overrideinfinalchild() != 5) return false;
         if (new AnotherFinalTestObjs(2).overrideinfinalchild() != 4) return false; // didn't override 
+
+        // == dynamic dispatch == 
+        if (new TestObjs(2).overrideinfinalchild() != 4) return false; // didn't override 
         return true;
     }
 

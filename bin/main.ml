@@ -422,13 +422,16 @@ let emit_static_field ctx anyfield =
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
 
+type vtableinfo = lltype * llvalue * (method_signature, int * lltype) Hashtbl.t
+
 type compilation = {
     classes: class_path;
     intrinsics: (rt_intrinsic, lltype * llvalue) Hashtbl.t;
+    funcs_vtabled: (class_method_signature, llvalue) Hashtbl.t; (* not referenced yet but in a vtable *)
     func_queue: (class_method_signature, llvalue) Hashtbl.t; (* referenced but not yet compiled *)
     funcs_done: (class_method_signature, llvalue) Hashtbl.t; (* already compiled *)
     globals: (class_field_signature, localinfo) Hashtbl.t; (* static fields *)
-    structs: (class_name, lltype * (field_signature, int * lltype) Hashtbl.t) Hashtbl.t;
+    structs: (class_name, lltype * (field_signature, int * lltype) Hashtbl.t * vtableinfo option) Hashtbl.t;
 }
 
 let is_static_cms classes sign = 
@@ -447,19 +450,31 @@ let field_of_cfs classes sign =
     let cls = get_class classes cs in
     get_field cls fs
 
-(* TODO: its a bit unserious for every method call to be two lookups *)
-let find_func ctx comp sign = 
+let find_func_inner referenced ctx comp sign  = 
     match Hashtbl.find_opt comp.funcs_done sign with
     | Some f -> f
     | None -> (* haven't compiled yet *)
     match Hashtbl.find_opt comp.func_queue sign with
     | Some f -> f
-    | None -> (* haven't seen yet *)
+    | None -> (* haven't referenced it yet *)
+
+    match Hashtbl.find_opt comp.funcs_vtabled sign with
+    | Some f -> 
+        Hashtbl.remove comp.funcs_vtabled sign;
+        Hashtbl.replace comp.func_queue sign f;
+        f
+    | None -> (* haven't seen it yet *)
 
     let m = method_of_cms comp.classes sign in
+    assert (not (is_synchronized_method m));
     let func = forward_declare_method ctx m in
-    Hashtbl.replace comp.func_queue sign func;
+    let funcs = if referenced then comp.func_queue else comp.funcs_vtabled in
+    Hashtbl.replace funcs sign func;
     func
+
+(* TODO: its a bit unserious for every method call to be two lookups *)
+let find_func = find_func_inner true
+
 
 let find_global ctx comp sign = 
     match Hashtbl.find_opt comp.globals sign with
@@ -473,6 +488,46 @@ let find_global ctx comp sign =
 
 let parent_field_sign super =
     make_fs "__parent" (TObject (TClass super))
+
+let vtable_field_sign cn =
+    make_fs "__vtable" (TObject (TClass cn))
+
+let _fst3 (a, _, _) = a
+let snd3 (_, b, _) = b
+let trd3 (_, _, c) = c
+
+
+let emit_vtable ctx comp class_name: vtableinfo = 
+    let name = JPrint.class_name class_name in
+    let name = replace_chars name ".$" '_' in
+    let cls = get_class comp.classes class_name in
+    assert (not (is_final cls));
+    eprintf "emit vtable for %s\n" name; 
+    let methods = MethodMap.filter (fun m -> 
+        not (is_final_method m) && not (is_static_method m)
+    ) (get_methods cls) in
+
+    let add_method ms _value acc =
+        let cms = make_cms class_name ms in
+        assert (not (is_static_cms comp.classes cms));
+        let func = find_func_inner false ctx comp cms in (* forward declare but don't actually request compile yet *)
+        let func_ty = llfunc_type ctx ms false in
+        (ms, func, func_ty) :: acc 
+    in
+    let method_ptrs = MethodMap.fold add_method methods [] in
+
+    let vtable_ty = named_struct_type ctx.context ("vtable_" ^ name) in
+    struct_set_body vtable_ty (Array.of_list (List.map trd3 method_ptrs)) false;
+    let vtable_value = const_named_struct vtable_ty (Array.of_list (List.map snd3 method_ptrs)) in
+
+    (* Given a method_signature and a vtable pointer, need to be able to lookup the function pointer to call
+       so need to know which slot in the vtable it is stored. *)
+    let field_info = List.mapi (fun i (sign, _func, func_ty) -> 
+        (sign, (i, func_ty))
+        ) method_ptrs in
+    let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
+    (vtable_ty, vtable_value, field_slots)
+
 
 let rec find_class_lltype ctx comp class_name = 
     match Hashtbl.find_opt comp.structs class_name with
@@ -494,15 +549,24 @@ let rec find_class_lltype ctx comp class_name =
     let field_info = match super with
     | None -> field_info
     | Some super -> 
-        let (lparent, _) = find_class_lltype ctx comp super in
+        let (lparent, _, _) = find_class_lltype ctx comp super in
         let jparent = parent_field_sign super in
         (jparent, lparent) :: field_info
     in
+    (* At this point, we've called find_class_lltype on every class in the chain, 
+       so they're guarenteed to already have a struct/vtable.  *)
+    let (vtable, field_info) = if is_final cls 
+        then (None, field_info) 
+        else 
+            let vtable = emit_vtable ctx comp class_name in
+            let vsign = vtable_field_sign class_name in
+            Some vtable, (vsign, pointer_type ctx.context) :: field_info in
 
     let field_types = List.map snd field_info in
     let field_info = List.mapi (fun i (sign, ty) -> 
         (sign, (i, ty))
         ) field_info in
+    
     let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
     
     (* TODO: does llvm mess with field order? TODO: add canary to object header. *)
@@ -513,9 +577,47 @@ let rec find_class_lltype ctx comp class_name =
     let ll = named_struct_type ctx.context name in
     let is_packed = false in
     struct_set_body ll (Array.of_list field_types) is_packed;
-    let v = (ll, field_slots) in
+    let v = (ll, field_slots, vtable) in
     Hashtbl.replace comp.structs class_name v;
     v
+
+let rec get_field_ptr ctx comp obj classname sign =
+    let (obj_ty, fields, _) = find_class_lltype ctx comp classname in
+    let field = Hashtbl.find_opt fields sign in
+    match field with
+    | None -> (* the field was declared on a parent class. look up the chain. *)
+        let cls = get_class comp.classes classname in
+        let super = match cls with
+        | JInterface _ -> illegal "interfaces don't have fields (failed at inheitance chain?)"
+        | JClass cls -> (match cls.c_super_class with
+            | Some super -> super 
+            | None -> illegal "looking for field but no super class")
+        in
+        
+        (* alas, not a tail call *)
+        let (parent_ptr, _) = get_field_ptr ctx comp obj classname (parent_field_sign super) in
+        get_field_ptr ctx comp parent_ptr super sign
+        
+    | Some field -> (* The field was declared by this class. *)
+        let (field_index, ty) = field in
+        let ptr = build_struct_gep obj_ty obj field_index "" ctx.builder in
+        (ptr, ty)
+
+(* returns the function pointer to call *)
+let vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
+    let (cs, ms) = cms_split sign in
+    let (_, _, vtable) = find_class_lltype ctx comp cs in
+    let (_, _, fields) = Option.get vtable in
+    let (field_index, _ty) = Hashtbl.find fields ms in
+
+    let vsign = vtable_field_sign cs in
+    let (vptr, vty) = get_field_ptr ctx comp obj cs vsign in
+    let field_ptr = build_struct_gep vty vptr field_index "" ctx.builder in
+
+    (* TODO: this traps at compiletime maybe dont have to dereference it because its a function pointer? *)
+    (* let fptr = build_load fty field_ptr "" ctx.builder in  *)
+
+    field_ptr
 
 (*== Emiting llvm ir for a single method ==*)
 
@@ -591,28 +693,6 @@ let convert_method ctx code current_cms comp =
         let (new_stack, arg_values) = pop_n compstack arg_count in
         let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
         if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
-    in
-    let rec get_field_ptr obj classname sign =
-        let (obj_ty, fields) = find_class_lltype ctx comp classname in
-        let field = Hashtbl.find_opt fields sign in
-        match field with
-        | None -> (* the field was declared on a parent class. look up the chain. *)
-            let cls = get_class comp.classes classname in
-            let super = match cls with
-            | JInterface _ -> illegal "interfaces don't have fields (failed at inheitance chain?)"
-            | JClass cls -> (match cls.c_super_class with
-                | Some super -> super 
-                | None -> illegal "looking for field but no super class")
-            in
-            
-            (* alas, not a tail call *)
-            let (parent_ptr, _) = get_field_ptr obj classname (parent_field_sign super) in
-            get_field_ptr parent_ptr super sign
-            
-        | Some field -> (* The field was declared by this class. *)
-            let (field_index, ty) = field in
-            let ptr = build_struct_gep obj_ty obj field_index "" ctx.builder in
-            (ptr, ty)
     in
 
     let emit_op compstack op index prev_op = 
@@ -761,28 +841,52 @@ let convert_method ctx code current_cms comp =
             let classfinal = is_final (get_class comp.classes classname) in
 
             let (foundclass, m) = Option.get (resolve_method classname target_sign) in
-            if is_final_method m then (* nobody can override so call whatever was found in the chain *)
+            if is_final_method m then (* nobody can override *)
                 call_method foundclass target_sign false compstack
-            else if classfinal then (* nobody past us can override so we can see the whole chain *)
+            else if classfinal then (* nobody past us can override *)
                 call_method foundclass target_sign false compstack
             else
-                todo "vtable call"
+                let _ = eprintf "call vtable" in
+                let obj = List.hd compstack in (* TODO: that might be last arg instead of first *)
+                let fptr = vtable_lookup ctx comp (make_cms classname target_sign) obj in
                 
+                let is_static = false in
+                (* TODO: this is copy paste from call_method *)
+                let arg_count = List.length (ms_args target_sign) in
+                let arg_count = if is_static then arg_count else arg_count + 1 in
+                if arg_count > List.length compstack 
+                    then illegal ("stack underflow calling " ^ (ms_name target_sign) ^ " from " ^ (ms_name current_sign));
+                let func_ty = llfunc_type ctx target_sign is_static in
+                let func_value = fptr in 
+                let (new_stack, arg_values) = pop_n compstack arg_count in
+                let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
+                if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
 
+        
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
-            let ty = fst (find_class_lltype ctx comp classname) in
+            let (ty, _, _) = find_class_lltype ctx comp classname in
             let obj = build_malloc ty "" ctx.builder in
+            if not (is_final (get_class comp.classes classname)) then 
+                let _ = eprintf "write vtable\n" in
+
+            (* trap here *)
+            let (_, _, vtable) = find_class_lltype ctx comp classname in
+            let (_, vptr_base, _fields) = Option.get vtable in
+            let (vptr_field, _vty) = get_field_ptr ctx comp obj classname (vtable_field_sign classname) in
+            let _ = build_store vptr_base vptr_field ctx.builder in
+
+                () else ();
             obj :: compstack
         
         | OpGetField (cls, sign) -> 
-            let (ptr, ty) = get_field_ptr (List.hd compstack) cls sign in
+            let (ptr, ty) = get_field_ptr ctx comp (List.hd compstack) cls sign in
             let v = build_load ty ptr "" ctx.builder in
             v :: (drop_fst compstack)
         
         | OpPutField (cls, sign) -> 
             let obj = List.nth compstack 1 in
             let value = List.nth compstack 0 in
-            let (ptr, _) = get_field_ptr obj cls sign in
+            let (ptr, _) = get_field_ptr ctx comp obj cls sign in
             let _ = build_store value ptr ctx.builder in
             drop_fst (drop_fst compstack)
 
@@ -880,6 +984,7 @@ let () =
     let comp = { 
         classes;
         intrinsics = Hashtbl.create 0; 
+        funcs_vtabled = Hashtbl.create 0; 
         func_queue = Hashtbl.create 0; 
         funcs_done = Hashtbl.create 0; 
         globals = Hashtbl.create 0; 
