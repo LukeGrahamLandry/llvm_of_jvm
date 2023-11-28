@@ -471,7 +471,10 @@ let find_global ctx comp sign =
     Hashtbl.replace comp.globals sign global;
     global
 
-let find_class_lltype ctx comp class_name = 
+let parent_field_sign super =
+    make_fs "__parent" (TObject (TClass super))
+
+let rec find_class_lltype ctx comp class_name = 
     match Hashtbl.find_opt comp.structs class_name with
     | Some f -> f
     | None -> (* haven't seen yet *)
@@ -483,15 +486,26 @@ let find_class_lltype ctx comp class_name =
         (sign, ty) :: acc
     in
     let field_info = FieldMap.fold add_field fields [] in
+
+    let super = match cls with
+    | JInterface _ -> todo "interface inheritance find_class_lltype"
+    | JClass cls -> cls.c_super_class
+    in
+    let field_info = match super with
+    | None -> field_info
+    | Some super -> 
+        let (lparent, _) = find_class_lltype ctx comp super in
+        let jparent = parent_field_sign super in
+        (jparent, lparent) :: field_info
+    in
+
     let field_types = List.map snd field_info in
-
-
     let field_info = List.mapi (fun i (sign, ty) -> 
         (sign, (i, ty))
         ) field_info in
     let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
     
-    (* TODO: first field is super class. TODO: does llvm mess with field order? TODO: add canary to object header. *)
+    (* TODO: does llvm mess with field order? TODO: add canary to object header. *)
     
     let name = JPrint.class_name class_name in
     let name = replace_chars name ".$" '_' in
@@ -578,11 +592,27 @@ let convert_method ctx code current_cms comp =
         let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
         if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
     in
-    let get_field_ptr obj cls sign =
-        let (obj_ty, fields) = find_class_lltype ctx comp cls in
-        let (field_index, ty) = Hashtbl.find fields sign in
-        let ptr = build_struct_gep obj_ty obj field_index "" ctx.builder in
-        (ptr, ty)
+    let rec get_field_ptr obj classname sign =
+        let (obj_ty, fields) = find_class_lltype ctx comp classname in
+        let field = Hashtbl.find_opt fields sign in
+        match field with
+        | None -> (* the field was declared on a parent class. look up the chain. *)
+            let cls = get_class comp.classes classname in
+            let super = match cls with
+            | JInterface _ -> illegal "interfaces don't have fields (failed at inheitance chain?)"
+            | JClass cls -> (match cls.c_super_class with
+                | Some super -> super 
+                | None -> illegal "looking for field but no super class")
+            in
+            
+            (* alas, not a tail call *)
+            let (parent_ptr, _) = get_field_ptr obj classname (parent_field_sign super) in
+            get_field_ptr parent_ptr super sign
+            
+        | Some field -> (* The field was declared by this class. *)
+            let (field_index, ty) = field in
+            let ptr = build_struct_gep obj_ty obj field_index "" ctx.builder in
+            (ptr, ty)
     in
 
     let emit_op compstack op index prev_op = 
@@ -701,7 +731,7 @@ let convert_method ctx code current_cms comp =
 
         | OpInvoke ((`Static (_ioc, classname)), target_sign) -> 
             call_method classname target_sign true compstack
-        | OpInvoke ((`Special (_ioc, classname)), target_sign) -> 
+        | OpInvoke ((`Special (_ioc, classname)), target_sign) -> (* direct call like constructors or super *)
             call_method classname target_sign false compstack
         | OpInvoke ((`Virtual objty), target_sign) -> 
             let classname = match objty with
@@ -710,8 +740,7 @@ let convert_method ctx code current_cms comp =
             in
 
             (* Walk the inheritance chain up from classname and find a method matching sign. 
-               Note: the method might be overriden between classname and the class this returns. 
-               Can only use static dispatch if the method is final. *)
+               Always returns the first class (going up) to override the method. *)
             let rec resolve_method classname sign =
                 let cls = get_class comp.classes classname in
                 let m = get_method_opt cls target_sign in
@@ -729,8 +758,12 @@ let convert_method ctx code current_cms comp =
                     )
             in
 
+            let classfinal = is_final (get_class comp.classes classname) in
+
             let (foundclass, m) = Option.get (resolve_method classname target_sign) in
-            if is_final_method m then 
+            if is_final_method m then (* nobody can override so call whatever was found in the chain *)
+                call_method foundclass target_sign false compstack
+            else if classfinal then (* nobody past us can override so we can see the whole chain *)
                 call_method foundclass target_sign false compstack
             else
                 todo "vtable call"

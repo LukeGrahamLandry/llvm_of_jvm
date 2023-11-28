@@ -1,7 +1,13 @@
-## Fields 
+## Fields (Nov 28)
 
 llvm tracks struct fields by index so just keep track of the (arbitrary) order I asked for. 
 Then can gep to trade a struct pointer and index for a field pointer. 
+
+For inheritance, make a fake __parent field that's directly the super class instead of just a pointer to one. 
+The classfile's field list doesn't include inherited ones so that works out, each struct in the chain just adds the new stuff. To look up a field, you try to find it in your class. If its there, great, you're the first in the chain just do the thing. If its not there, access your magic parent field and then try to lookup the field on that object instead. Javac gives well typed class files so it should always work out. 
+
+Calling a method that IS NOT final but the class IS final, is also easy. You know the object you're looking at must be exactly that class (with nothing further down the chain) so can do static dispatch. Do have to carefully check up the chain since this lets you call a nonfinal on someone above you if you're final. 
+
 
 ## Objects (Nov 27)
 
