@@ -415,6 +415,7 @@ type compilation = {
     func_queue: (class_method_signature, llvalue) Hashtbl.t; (* referenced but not yet compiled *)
     funcs_done: (class_method_signature, llvalue) Hashtbl.t; (* already compiled *)
     globals: (class_field_signature, localinfo) Hashtbl.t; (* static fields *)
+    structs: (class_name, lltype) Hashtbl.t;
 }
 let is_static_cms classes sign = 
     let (cs, ms) = cms_split sign in
@@ -455,6 +456,28 @@ let find_global ctx comp sign =
     let global = emit_static_field ctx field in
     Hashtbl.replace comp.globals sign global;
     global
+
+let find_class_lltype ctx comp class_name = 
+    match Hashtbl.find_opt comp.structs class_name with
+    | Some f -> f
+    | None -> (* haven't seen yet *)
+    
+    let cls = get_class comp.classes class_name in
+    let fields = get_fields cls in
+    let field_types = FieldMap.fold (fun sign _value acc -> 
+        let ty = lltype_of_valuetype ctx (fs_type sign) in
+
+        ty :: acc
+    ) fields [] in
+    (* TODO: first field is super class *)
+    
+    let name = JPrint.class_name class_name in
+    (* TODO: store indexes of each field *)
+    let ll = named_struct_type ctx.context name in
+    let is_packed = false in
+    struct_set_body ll (Array.of_list field_types) is_packed;
+    Hashtbl.replace comp.structs class_name ll;
+    ll
 
 (*== Emiting llvm ir for a single method ==*)
 
@@ -651,9 +674,10 @@ let convert_method ctx code current_cms comp =
         | OpInvoke ((`Special (_ioc, classname)), target_sign) -> 
             call_method classname target_sign false compstack
 
-        | OpNew _classname -> 
+        | OpNew classname -> 
             (* TODO: !!!! actually allocate a thing with an object header and enough fields. intrinsic? *)
-            let obj = build_malloc (i32_type ctx.context) "" ctx.builder in
+            let ty = find_class_lltype ctx comp classname in
+            let obj = build_malloc ty "" ctx.builder in
             obj :: compstack
 
         | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
@@ -753,6 +777,7 @@ let () =
         func_queue = Hashtbl.create 0; 
         funcs_done = Hashtbl.create 0; 
         globals = Hashtbl.create 0; 
+        structs = Hashtbl.create 0; 
     } in
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)

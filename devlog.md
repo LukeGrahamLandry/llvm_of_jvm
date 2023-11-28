@@ -16,6 +16,15 @@ Just treat an instance method as a static method taking `this` as the first argu
 Soon instance methods will need to go in a vtable for dynamic dispatch but I want to start with OpInvokeSpecial. 
 That's what's used to call the constructor, super constructor, etc, where you want to specify a specific level of the inheritance hiarchy to target. I don't even have fields yet so maybe just pretend an object is a heap allocated integer as a first step. 
 
+
+struct_type doesn't take a name and each reference seems to appear as a seperate thing in the ir. 
+Instead can use named_struct_type which takes a string but no type array and then call struct_set_body on it with the field types. 
+It also takes a boolean but no idea what it does. Difference in ir is, 
+true: `%TestObjs = type <{ i32 }>` OR false: `%TestObjs = type { i32 }`
+Apparently its ispacked. Why I need to google that instead of it being in llvm.ml who can say. 
+- https://llvm.moe/ocaml/Llvm.html
+Also it seems llvm cares not for the field order which is gonna get a bit scary trying to have it interface with my c stuff. 
+
 Could have a compiler flag for release builds that treat `@NonNull` as an assertion and emit as a poison value? 
 There's also https://llvm.org/docs/FaultMaps.html which looks interesting. 
 
