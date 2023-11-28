@@ -6,6 +6,8 @@ But having the objptr type be some real type instead of a void* means you get `w
 Think this is the point where it makes sense to do a little name mangling to avoid conflicts. Just prefix the package and class name on every function. Its a little sad tho cause it makes the test program more verbose. 
 I'm using underscores instead of dots in package because I want to be able to refer to them from c but it means they could still technically overlap like `a.b.c.java` and `a.b_c.java` both use `a_b_c` as thier prefix. 
 
+Feels important to only try to do the methods you actually call because there's probably a lot of stuff you'd pull in by looking at the whole tree that I'd choke on. Like Object has syncronisation stuff that would pull in threads maybe.
+
 The GenericMapSig in javalib would be so convient but it doesnt have an optional get method? 
 
 Could have a compiler flag for release builds that treat `@NonNull` as an assertion and emit as a poison value? 

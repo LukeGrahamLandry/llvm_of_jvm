@@ -46,7 +46,7 @@ let do_templates () =
 let () = 
 	(* run "dune build"; want to have `dune build --watch` anyway *)
 	(* TODO: This is ugly. Need to tell it which entry points to convert. Eventually just start at main? *)
-	let classes = "TestObjs" :: "OpTest" :: do_templates () in
+	let classes = "OpTest" :: do_templates () in
 	let classes = String.concat " " classes in
 
 	run "javac java/*.java out/java/*.java";

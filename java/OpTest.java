@@ -219,4 +219,8 @@ public class OpTest {
         nums[0][1][2][3] = i;
         return nums[0][1][2][3];
     }
+
+    public static int useimported(int a) {
+        return TestObjs.importmebb(a);
+    }
 }

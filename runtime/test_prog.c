@@ -36,6 +36,7 @@ int OpTest_mul(int a, int b) {  // Imported native
 int OpTest_reuse_local(int a);
 int OpTest_arr_of_arr(int a);
 int OpTest_nested_arr(int a);
+int OpTest_useimported(int a);
 
 void optestjava() {
     assert(OpTest_add(1, 2) == 3);
@@ -97,6 +98,7 @@ void optestjava() {
     assert(OpTest_reuse_local(0) == 0);
     assert(OpTest_arr_of_arr(3) == 66);
     assert(OpTest_nested_arr(2) == (2*3*4*5));
+    assert(OpTest_useimported(49) == 50);
 }
 
 // PrimitiveTemplateTYPE.txt

@@ -44,6 +44,13 @@ let pop_n l n =
     (drop_fst remaining, (List.hd remaining) :: taken)
     ) (l, []) (List.init n (fun _ -> ()))
 
+
+(* Choose an arbitrary entry from a hash table. *)
+let take_any m = 
+    match Hashtbl.to_seq m () with
+    | Nil -> None
+    | Cons (d, _) -> Some d
+
 (*== Conversion between different type representations ==*)
 (* TODO: is there any way to deal with overlaping enums in a less painful way? *)
 
@@ -686,31 +693,24 @@ let convert_method ctx code current_cms comp =
 
 (*== Walking classes to find code ==*)
 
-let emit_method ctx m comp = 
+let emit_method ctx comp m = 
     match m with
     | AbstractMethod _ -> todo "AbstractMethod"
     | ConcreteMethod func ->
+        let sign = func.cm_class_method_signature in
+        assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
         (match func.cm_implementation with
-            | Native -> 
-                let _ = find_func ctx comp func.cm_class_method_signature in
-                ()
+            | Native -> ()
             | Java code ->
                 let jcode = Lazy.force code in
-                convert_method ctx jcode func.cm_class_method_signature comp
+                convert_method ctx jcode sign comp
         );
         
-        let ll = Hashtbl.find comp.func_queue func.cm_class_method_signature in
-        Hashtbl.remove comp.func_queue func.cm_class_method_signature;
-        Hashtbl.replace comp.funcs_done func.cm_class_method_signature ll;
+        let ll = Hashtbl.find comp.func_queue sign in
+        Hashtbl.remove comp.func_queue sign;
+        Hashtbl.replace comp.funcs_done sign ll;
         ()
 
-let emit_class ctx cls comp = 
-    (* TODO: use comp and load lazily instead of walking everything up front *)
-    let methods = MethodMap.filter is_static_method (get_methods cls) in
-    let _ = MethodMap.map (fun m ->
-        emit_method ctx m comp
-        ) methods in
-    ()
 
 let () = 
     let entry_classes = drop_fst (Array.to_list Sys.argv) in
@@ -729,17 +729,28 @@ let () =
         globals = Hashtbl.create 0; 
     } in
 
-    List.iter (fun name -> 
+    (* Treat all static methods in the class <name> as roots. *)
+    let reference_all name =
         let cls = get_class classes (make_cn name) in
-        emit_class ctx cls comp;
-    ) entry_classes;
+        let methods = MethodMap.filter is_static_method (get_methods cls) in
+        MethodMap.iter (fun ms _ -> 
+            let _ = find_func ctx comp (make_cms (make_cn name) ms) in
+            ()
+            ) methods;
+    in
 
-    eprintf "%s\n" (string_of_int (Hashtbl.length comp.func_queue));
-    Hashtbl.iter (fun k _v -> 
-        eprintf "hello";
-        eprintf "%s\n"  (JPrint.class_method_signature k);
-        ()) comp.func_queue;
-    (* assert (Hashtbl.length comp.func_queue == 0); *)
+    List.iter reference_all entry_classes;
+
+    let rec emit_next () = 
+        match take_any comp.func_queue with
+        | None -> ()
+        | Some (cms, _) -> 
+            let m = method_of_cms comp.classes cms in
+            emit_method ctx comp m;
+            emit_next ()
+    in
+    emit_next ();
+    assert (Hashtbl.length comp.func_queue == 0);
     
     let code = string_of_llmodule ctx.the_module in
     print_endline code;
