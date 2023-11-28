@@ -223,4 +223,8 @@ public class OpTest {
     public static int useimported(int a) {
         return TestObjs.importmebb(a);
     }
+
+    public static boolean objtest() {
+        return TestObjs.sometests();
+    }
 }

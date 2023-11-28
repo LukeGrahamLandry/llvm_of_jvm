@@ -51,6 +51,12 @@ let take_any m =
     | Nil -> None
     | Cons (d, _) -> Some d
 
+(*== Wrap functions that use exceptions ==*)
+
+let get_method_opt cls target_sign = 
+    try Some (get_method cls target_sign) with 
+    Not_found -> None
+
 (*== Conversion between different type representations ==*)
 (* TODO: is there any way to deal with overlaping enums in a less painful way? *)
 
@@ -206,9 +212,15 @@ let rec op_stack_delta op =
     | OpInvoke ((`Static _), sign) -> 
         let ret = if (ms_rtype sign) == None then 0 else 1 in
         ret - List.length (ms_args sign)
+
     | OpInvoke ((`Special ty), sign) -> (* -1, signature doesn't include this pointer *)
         -1 + op_stack_delta (OpInvoke ((`Static ty), sign))
     | OpAMultiNewArray (_, dim) -> 1 - dim
+
+    | OpInvoke ((`Virtual _), sign) ->
+        let ret = if (ms_rtype sign) == None then 0 else 1 in
+        -1 + ret - List.length (ms_args sign)
+
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
 
@@ -393,7 +405,7 @@ let forward_declare_method ctx m =
         let sign = func.cm_signature in
         let cls = fst (cms_split func.cm_class_method_signature) in
         let name = (cn_name cls) ^ "_" ^ (ms_name sign) in
-        let name = replace_chars name "><." '_' in
+        let name = replace_chars name "><.$" '_' in
         declare_function name (llfunc_type ctx sign func.cm_static) ctx.the_module
 
 let emit_static_field ctx anyfield = 
@@ -404,7 +416,7 @@ let emit_static_field ctx anyfield =
         assert (field.cf_value == None);  (* Seems to always use <clinit> *)
         let ty = lltype_of_valuetype ctx (fs_type field.cf_signature) in
         let cls = fst (cfs_split field.cf_class_signature) in
-        let name = replace_chars (cn_name cls) "." '_' in
+        let name = replace_chars (cn_name cls) ".$" '_' in
         let name = name ^ "_" ^ (fs_name field.cf_signature) in 
         let init_val = const_int ty 0 in
         let v = define_global name init_val ctx.the_module in
@@ -481,9 +493,8 @@ let find_class_lltype ctx comp class_name =
     
     (* TODO: first field is super class. TODO: does llvm mess with field order? TODO: add canary to object header. *)
     
-    
-
     let name = JPrint.class_name class_name in
+    let name = replace_chars name ".$" '_' in
     (* TODO: store indexes of each field *)
     let ll = named_struct_type ctx.context name in
     let is_packed = false in
@@ -692,6 +703,38 @@ let convert_method ctx code current_cms comp =
             call_method classname target_sign true compstack
         | OpInvoke ((`Special (_ioc, classname)), target_sign) -> 
             call_method classname target_sign false compstack
+        | OpInvoke ((`Virtual objty), target_sign) -> 
+            let classname = match objty with
+            | TClass cl -> cl
+            | TArray _ -> todo "unreachable? virtual method call on an array."
+            in
+
+            (* Walk the inheritance chain up from classname and find a method matching sign. 
+               Note: the method might be overriden between classname and the class this returns. 
+               Can only use static dispatch if the method is final. *)
+            let rec resolve_method classname sign =
+                let cls = get_class comp.classes classname in
+                let m = get_method_opt cls target_sign in
+                (match m with
+                | Some m -> Some (classname, m)
+                | None -> 
+                    let super = match cls with
+                    | JInterface _ -> todo "interface resolve_method"
+                    | JClass cls -> cls.c_super_class
+                    in
+
+                    match super with 
+                    | None -> None
+                    | Some super -> resolve_method super sign
+                    )
+            in
+
+            let (foundclass, m) = Option.get (resolve_method classname target_sign) in
+            if is_final_method m then 
+                call_method foundclass target_sign false compstack
+            else
+                todo "vtable call"
+                
 
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
             let ty = fst (find_class_lltype ctx comp classname) in
