@@ -10,6 +10,12 @@ Feels important to only try to do the methods you actually call because there's 
 
 The GenericMapSig in javalib would be so convient but it doesnt have an optional get method? 
 
+Seems like there's an awkwardness where a class method signeture doesn't include the this pointer for non-static methods. 
+Current solution is carefully adding it everywhere I was converting a java method signeture to an llvm function signeture. 
+Just treat an instance method as a static method taking `this` as the first argument for now. 
+Soon instance methods will need to go in a vtable for dynamic dispatch but I want to start with OpInvokeSpecial. 
+That's what's used to call the constructor, super constructor, etc, where you want to specify a specific level of the inheritance hiarchy to target. I don't even have fields yet so maybe just pretend an object is a heap allocated integer as a first step. 
+
 Could have a compiler flag for release builds that treat `@NonNull` as an assertion and emit as a poison value? 
 There's also https://llvm.org/docs/FaultMaps.html which looks interesting. 
 

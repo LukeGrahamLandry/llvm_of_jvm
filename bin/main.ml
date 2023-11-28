@@ -160,8 +160,10 @@ let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t =
         | `Le -> Ule
         | `Null | `NonNull -> illegal "fcmp Null/NonNull")
 
-let llfunc_type ctx sign = 
-    let arg_types = Array.of_list (List.map (lltype_of_valuetype ctx) (ms_args sign)) in
+let llfunc_type ctx sign is_static = 
+    let arg_types = List.map (lltype_of_valuetype ctx) (ms_args sign) in
+    let arg_types = if is_static then arg_types else (pointer_type ctx.context) :: arg_types in
+    let arg_types = Array.of_list arg_types in
     let ret = match ms_rtype sign with 
         | Some ty -> lltype_of_valuetype ctx ty 
         | None -> void_type ctx.context 
@@ -178,7 +180,7 @@ let slotcount_for ty =
         | `Long | `Double -> 2
 
 (* Result is not in jvm index units. All types take one slot. *)
-let op_stack_delta op = 
+let rec op_stack_delta op = 
     match op with
     | (OpArrayStore _) -> -3
     | (OpIfCmp _) -> -2
@@ -198,12 +200,14 @@ let op_stack_delta op =
     | (OpNewArray _) | OpArrayLength 
     -> 0
 
-    | (OpLoad _) | (OpConst _) | (OpGetStatic _) -> 1
+    | (OpLoad _) | (OpConst _) | (OpGetStatic _) | (OpNew _) | OpDup -> 1
 
     | OpReturn ty -> if ty == `Void then 0 else -1
     | OpInvoke ((`Static _), sign) -> 
         let ret = if (ms_rtype sign) == None then 0 else 1 in
         ret - List.length (ms_args sign)
+    | OpInvoke ((`Special ty), sign) -> (* -1, signature doesn't include this pointer *)
+        -1 + op_stack_delta (OpInvoke ((`Static ty), sign))
     | OpAMultiNewArray (_, dim) -> 1 - dim
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
@@ -273,18 +277,20 @@ let assert_mut place =
 
 (* Returns map of local indexes for the function arguments to thier llvm ssa. 
    ie. f(int, long, int) -> {0=%0, 1=%1, 3=%2} because longs take two slots *)
-let find_arg_locals func sign = 
+let find_arg_locals func sign is_static = 
     let largs = Array.to_list (params func) in
     let jargs = ms_args sign in
+    let start = if is_static then ([], 0) else ([(0, List.hd largs)], 1) in
+    let largs = if is_static then largs else drop_fst largs in
     let pairs = List.rev (fst (List.fold_left2 (fun (l, off) jty ssa -> 
         ((off, ssa) :: l, off + (slotcount_for jty))
-    ) ([], 0) jargs largs)) in
+    ) start jargs largs)) in
     Hashtbl.of_seq (List.to_seq pairs)
 
 (* Create the entry block before block 0 and emit alloca instructions for each local variable in the method 
    Also copy mutable arguments to thier stack slot. *)
-let alloc_locals ctx func code sign: localmap = 
-    let arg_locals = find_arg_locals func sign in
+let alloc_locals ctx func code sign is_static: localmap = 
+    let arg_locals = find_arg_locals func sign is_static in
     let local_stores = count_local_stores code.c_code in
     let entry = append_block ctx.context "entry" func in 
     position_at_end entry ctx.builder; 
@@ -387,7 +393,7 @@ let forward_declare_method ctx m =
         let cls = fst (cms_split func.cm_class_method_signature) in
         let name = (cn_name cls) ^ "_" ^ (ms_name sign) in
         let name = replace_chars name "><." '_' in
-        declare_function name (llfunc_type ctx sign) ctx.the_module
+        declare_function name (llfunc_type ctx sign func.cm_static) ctx.the_module
 
 let emit_static_field ctx anyfield = 
     match anyfield with
@@ -410,6 +416,11 @@ type compilation = {
     funcs_done: (class_method_signature, llvalue) Hashtbl.t; (* already compiled *)
     globals: (class_field_signature, localinfo) Hashtbl.t; (* static fields *)
 }
+let is_static_cms classes sign = 
+    let (cs, ms) = cms_split sign in
+    let cls = get_class classes cs in
+    let cm = get_concrete_method cls ms in
+    cm.cm_static
 
 let method_of_cms classes sign = 
     let (cs, ms) = cms_split sign in
@@ -478,6 +489,7 @@ let total_seen = ref 0  (* TODO: can remove. was just curious *)
 
 let convert_method ctx code current_cms comp = 
     let current_sign = snd (cms_split current_cms) in
+    let is_static = is_static_cms comp.classes current_cms in
     let func = find_func ctx comp current_cms in 
     let ret_ty = ms_rtype current_sign in
 
@@ -485,7 +497,7 @@ let convert_method ctx code current_cms comp =
     if not (stack_comptime_safe block_positions code.c_code)
         then todo ("use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign) ^ " [often we dont like (a ? b : c)]");
 
-    let locals = alloc_locals ctx func code current_sign in
+    let locals = alloc_locals ctx func code current_sign is_static in
     let basic_blocks = init_basic_blocks ctx func block_positions in
     let first = Hashtbl.find basic_blocks 0 in
     let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
@@ -506,6 +518,18 @@ let convert_method ctx code current_cms comp =
         let (stack, args) = pop_n in_stack arg_count in
         let ret = build_call (fst f) (snd f) (Array.of_list args) "" ctx.builder in
         (ret, stack)
+    in
+    let call_method classname target_sign is_static compstack = 
+        let arg_count = List.length (ms_args target_sign) in
+        let arg_count = if is_static then arg_count else arg_count + 1 in
+        if arg_count > List.length compstack 
+            then illegal ("stack underflow calling " ^ (ms_name target_sign) ^ " from " ^ (ms_name current_sign));
+        let func_ty = llfunc_type ctx target_sign is_static in
+        let cms = make_cms classname target_sign in
+        let func_value = find_func ctx comp cms in 
+        let (new_stack, arg_values) = pop_n compstack arg_count in
+        let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
+        if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
     in
 
     let emit_op compstack op index prev_op = 
@@ -623,14 +647,14 @@ let convert_method ctx code current_cms comp =
         | OpI2C -> todo "what's a char?"
 
         | OpInvoke ((`Static (_ioc, classname)), target_sign) -> 
-            if List.length (ms_args target_sign) > List.length compstack 
-                then illegal ("stack underflow calling " ^ (ms_name target_sign) ^ " from " ^ (ms_name current_sign));
-            let func_ty = llfunc_type ctx target_sign in
-            let cms = make_cms classname target_sign in
-            let func_value = find_func ctx comp cms in 
-            let (new_stack, arg_values) = pop_n compstack (List.length (ms_args target_sign)) in
-            let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
-            if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
+            call_method classname target_sign true compstack
+        | OpInvoke ((`Special (_ioc, classname)), target_sign) -> 
+            call_method classname target_sign false compstack
+
+        | OpNew _classname -> 
+            (* TODO: !!!! actually allocate a thing with an object header and enough fields. intrinsic? *)
+            let obj = build_malloc (i32_type ctx.context) "" ctx.builder in
+            obj :: compstack
 
         | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
             (* TODO: pass next_op to emit_op if i start using it for anything *)
@@ -677,6 +701,8 @@ let convert_method ctx code current_cms comp =
             let working = do_fill (arr :: counts) 0 in
             let _ = assert (List.length working == 1) in
             (List.hd working) :: rest_stack
+        | OpDup -> List.hd compstack :: compstack
+        
         
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
@@ -717,7 +743,7 @@ let () =
     
     (* TODO: don't just hardcode the path lol *)
     (* TODO: past java 8 need to figure out what to do with a jmod file *)
-    let classes = class_path "./java:./out/java" in (* :/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib *)
+    let classes = class_path "./java:./out/java:/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib" in (*  *)
 
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
@@ -729,7 +755,7 @@ let () =
         globals = Hashtbl.create 0; 
     } in
 
-    (* Treat all static methods in the class <name> as roots. *)
+    (* Treat all static methods in the class <name> as roots. TODO: ugly *)
     let reference_all name =
         let cls = get_class classes (make_cn name) in
         let methods = MethodMap.filter is_static_method (get_methods cls) in
