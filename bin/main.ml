@@ -183,7 +183,7 @@ let slotcount_for ty =
 let rec op_stack_delta op = 
     match op with
     | (OpArrayStore _) -> -3
-    | (OpIfCmp _) -> -2
+    | (OpIfCmp _) | (OpPutField _) -> -2
 
     | (OpAdd _) | (OpSub _) | (OpMult _) | (OpDiv _)| (OpRem _)
     | (OpStore _) | (OpPutStatic _) 
@@ -197,7 +197,7 @@ let rec op_stack_delta op =
     | (OpNeg _) | (OpIInc _) 
     | OpGoto _
     | OpInvalid
-    | (OpNewArray _) | OpArrayLength 
+    | (OpNewArray _) | OpArrayLength | (OpGetField _)
     -> 0
 
     | (OpLoad _) | (OpConst _) | (OpGetStatic _) | (OpNew _) | OpDup -> 1
@@ -256,6 +256,7 @@ let count_local_stores (code: jopcode array) =
     in
     Array.iter (fun op -> 
         match op with 
+        (* TODO: should make key (ty, index) instead of (index, ty) so don't have to reorder *)
         | OpLoad (ty, index) -> maybe_init (index, ty)
         | OpStore (ty, index) -> inc (index, ty)
         | OpIInc (index, _) -> inc (index, `Int2Bool)
@@ -383,7 +384,7 @@ let get_rtintrinsic ctx memo op =
     Hashtbl.replace memo op f;
     f
 
-(*== Lazily forward declare functions ==*)
+(*== Lazily forward declare functions and structs for classes ==*)
 
 let forward_declare_method ctx m = 
     match m with
@@ -415,8 +416,9 @@ type compilation = {
     func_queue: (class_method_signature, llvalue) Hashtbl.t; (* referenced but not yet compiled *)
     funcs_done: (class_method_signature, llvalue) Hashtbl.t; (* already compiled *)
     globals: (class_field_signature, localinfo) Hashtbl.t; (* static fields *)
-    structs: (class_name, lltype) Hashtbl.t;
+    structs: (class_name, lltype * (field_signature, int * lltype) Hashtbl.t) Hashtbl.t;
 }
+
 let is_static_cms classes sign = 
     let (cs, ms) = cms_split sign in
     let cls = get_class classes cs in
@@ -464,20 +466,31 @@ let find_class_lltype ctx comp class_name =
     
     let cls = get_class comp.classes class_name in
     let fields = get_fields cls in
-    let field_types = FieldMap.fold (fun sign _value acc -> 
+    let add_field sign _value acc = 
         let ty = lltype_of_valuetype ctx (fs_type sign) in
+        (sign, ty) :: acc
+    in
+    let field_info = FieldMap.fold add_field fields [] in
+    let field_types = List.map snd field_info in
 
-        ty :: acc
-    ) fields [] in
-    (* TODO: first field is super class *)
+
+    let field_info = List.mapi (fun i (sign, ty) -> 
+        (sign, (i, ty))
+        ) field_info in
+    let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
     
+    (* TODO: first field is super class. TODO: does llvm mess with field order? TODO: add canary to object header. *)
+    
+    
+
     let name = JPrint.class_name class_name in
     (* TODO: store indexes of each field *)
     let ll = named_struct_type ctx.context name in
     let is_packed = false in
     struct_set_body ll (Array.of_list field_types) is_packed;
-    Hashtbl.replace comp.structs class_name ll;
-    ll
+    let v = (ll, field_slots) in
+    Hashtbl.replace comp.structs class_name v;
+    v
 
 (*== Emiting llvm ir for a single method ==*)
 
@@ -553,6 +566,12 @@ let convert_method ctx code current_cms comp =
         let (new_stack, arg_values) = pop_n compstack arg_count in
         let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
         if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
+    in
+    let get_field_ptr obj cls sign =
+        let (obj_ty, fields) = find_class_lltype ctx comp cls in
+        let (field_index, ty) = Hashtbl.find fields sign in
+        let ptr = build_struct_gep obj_ty obj field_index "" ctx.builder in
+        (ptr, ty)
     in
 
     let emit_op compstack op index prev_op = 
@@ -674,11 +693,22 @@ let convert_method ctx code current_cms comp =
         | OpInvoke ((`Special (_ioc, classname)), target_sign) -> 
             call_method classname target_sign false compstack
 
-        | OpNew classname -> 
-            (* TODO: !!!! actually allocate a thing with an object header and enough fields. intrinsic? *)
-            let ty = find_class_lltype ctx comp classname in
+        | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
+            let ty = fst (find_class_lltype ctx comp classname) in
             let obj = build_malloc ty "" ctx.builder in
             obj :: compstack
+        
+        | OpGetField (cls, sign) -> 
+            let (ptr, ty) = get_field_ptr (List.hd compstack) cls sign in
+            let v = build_load ty ptr "" ctx.builder in
+            v :: (drop_fst compstack)
+        
+        | OpPutField (cls, sign) -> 
+            let obj = List.nth compstack 1 in
+            let value = List.nth compstack 0 in
+            let (ptr, _) = get_field_ptr obj cls sign in
+            let _ = build_store value ptr ctx.builder in
+            drop_fst (drop_fst compstack)
 
         | (OpCmp _ ) -> (* really this produces a value but instead, use it as a modifier to the opif *)
             (* TODO: pass next_op to emit_op if i start using it for anything *)

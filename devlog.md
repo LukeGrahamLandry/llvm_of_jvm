@@ -1,4 +1,9 @@
-## Objects
+## Fields 
+
+llvm tracks struct fields by index so just keep track of the (arbitrary) order I asked for. 
+Then can gep to trade a struct pointer and index for a field pointer. 
+
+## Objects (Nov 27)
 
 The natural trick to representing inheritance is just having the first field be the super class, same as how im doing arrays. 
 But having the objptr type be some real type instead of a void* means you get `warning: incompatible pointer types` for upcasting 
@@ -16,7 +21,6 @@ Just treat an instance method as a static method taking `this` as the first argu
 Soon instance methods will need to go in a vtable for dynamic dispatch but I want to start with OpInvokeSpecial. 
 That's what's used to call the constructor, super constructor, etc, where you want to specify a specific level of the inheritance hiarchy to target. I don't even have fields yet so maybe just pretend an object is a heap allocated integer as a first step. 
 
-
 struct_type doesn't take a name and each reference seems to appear as a seperate thing in the ir. 
 Instead can use named_struct_type which takes a string but no type array and then call struct_set_body on it with the field types. 
 It also takes a boolean but no idea what it does. Difference in ir is, 
@@ -27,6 +31,10 @@ Also it seems llvm cares not for the field order which is gonna get a bit scary 
 
 Could have a compiler flag for release builds that treat `@NonNull` as an assertion and emit as a poison value? 
 There's also https://llvm.org/docs/FaultMaps.html which looks interesting. 
+
+After a thousand years of trying to make link time optimisation work im reminded that llvm is hateful. 
+There's some weird fusion of clang and xcode that makes it very hard to make a newer version work maybe? 
+or im just dumb idk. 
 
 ## Thinking about tests
 
