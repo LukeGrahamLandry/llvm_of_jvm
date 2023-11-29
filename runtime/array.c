@@ -106,6 +106,16 @@ void fill_string_const(Array_u16* arr, char* bytes) {
     printf("done init string\n");
 }
 
+void log_throw(objptr throwable) {
+    printf("Unhandled Exception: object@%p\n", throwable);
+    assert(0);
+}
+
+// TODO: do this properly 
+char* java_lang_Throwable_fillInStackTrace1(char* obj, i32 dummy) {
+    printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
+    return obj;
+}
 
 #undef generic_array
 #undef OBJ_TYPE_ID

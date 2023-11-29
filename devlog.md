@@ -1,6 +1,10 @@
-## cleanup 
+## string constants (Nov 29) 
 
-- a bunch of places where i have really big tuples, replace them with structs so can have field names
+String constants need to be an instance of the String class so I need to do a kinda weird switchero where I make an object for any strings you need. In llvm I can emit a string constant that's just a byte array and then need to put that in a global so i have a `&[u8]` instead of a `[u8]`. Then need to make a char array out of that. So write a little rt_intrinsic that loops over an empty char array and fills in bytes from a `char*`. The whole thing where java chars are officially a u16 but they maybe do string compaction and store strings as ascii when possible is gonna be scary. Now I can't actually call the string constructor because they use an empty string literal in there which is kinda funny (even the one that takes a char array has a special case if length is zero). 
+
+And I don't have exceptions yet so I can't call most methods. They also use `?` everywhere and many methods take a CharSequence but I don't have interfaces yet. So I technically have strings but it seems `length()` is the only method you can actually call. 
+
+Right now you get a new object each time a string constant is evaluated. Need to move that into a static block or something so strings with the same value reuse the objects since they're immutable. 
 
 ## Dynamic Dispatch (Nov 28)
 

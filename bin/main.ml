@@ -136,7 +136,11 @@ let intcmp kind: Llvm.Icmp.t =
     | `IGe | `Ge -> Sge
     | `IGt | `Gt -> Sgt
     | `ILe | `Le -> Sle
-    | `AEq | `ANe | `Null | `NonNull -> todo "cmp ptr"
+    | `AEq -> Eq (* TODO: test this *)
+    | `ANe -> Ne
+    | `Null -> Eq
+    | `NonNull -> Ne
+        
 
 let fcmp_flag fcmpkind icmpkind: Llvm.Fcmp.t = 
     match fcmpkind with
@@ -199,6 +203,8 @@ let rec op_stack_delta op =
     | OpInvalid
     | (OpNewArray _) | OpArrayLength | (OpGetField _)
     -> 0
+
+    | OpThrow -> -1
 
     | (OpLoad _) | (OpConst _) | (OpGetStatic _) | (OpNew _) | OpDup -> 1
 
@@ -364,6 +370,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | ArrSet of jvm_array_type 
 | ArrFillMulti of jvm_array_type
 | FillStr
+| LogThrow
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -377,6 +384,7 @@ let intrinsic_signature ctx op =
         | ArrLen -> "array_length", [arr_t], i_t
         | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
         | FillStr -> "fill_string_const", [arr_t; arr_t], void_type ctx.context
+        | LogThrow -> "log_throw", [arr_t], void_type ctx.context
     in
     (name, args, ret)
 
@@ -454,11 +462,16 @@ let emit_static_field ctx anyfield =
     | ClassField field -> 
         assert field.cf_static;
         assert (field.cf_value == None);  (* Seems to always use <clinit> *)
-        let ty = lltype_of_valuetype ctx (fs_type field.cf_signature) in
+        let jty = fs_type field.cf_signature in 
+        let ty = lltype_of_valuetype ctx jty in
         let cls = fst (cfs_split field.cf_class_signature) in
         let name = replace_chars (cn_name cls) ".$" '_' in
         let name = name ^ "_" ^ (fs_name field.cf_signature) in 
-        let init_val = const_int ty 0 in
+        let init_val = match jty with
+        | TObject c -> 
+            eprintf "%s\n" ("static field holding object: " ^ name ^ ": " ^ (JPrint.object_type c));
+            const_null ty
+        | TBasic _ -> const_int ty 0 in
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
 
@@ -497,7 +510,7 @@ let find_func_inner referenced ctx comp sign =
     | None -> (* haven't seen it yet *)
 
     let m = method_of_cms comp.classes sign in
-    assert (not (is_synchronized_method m));
+    (* assert (not (is_synchronized_method m)); *)
     let func = forward_declare_method ctx comp m in
     let funcs = if referenced then comp.func_queue else comp.funcs_vtabled in
     Hashtbl.replace funcs sign func;
@@ -877,7 +890,10 @@ let convert_method ctx code current_cms comp =
                 let flag = fcmp_flag fkind kind in 
                 cmp build_fcmp flag compstack
             | _ -> (* This is just a normal integer compare to zero. *)
-                let zero = const_int (type_of (List.hd compstack)) 0 in 
+                let zero = match kind with
+                | `NonNull | `Null -> const_null (type_of (List.hd compstack)) 
+                | _ -> const_int (type_of (List.hd compstack)) 0 
+                in 
                 cmp build_icmp (intcmp kind) (zero :: compstack)
             ) in
             let _ = build_cond_br c true_block false_block ctx.builder in
@@ -1015,6 +1031,12 @@ let convert_method ctx code current_cms comp =
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
         | (OpRet _) | (OpJsr _ ) -> illegal ((JPrint.jopcode op) ^ " was deprecated in Java 7.")
+
+        | OpThrow -> 
+            let _ = (call_intin (LogThrow) compstack) in
+            let _ = build_unreachable ctx.builder in (* TODO: this is wrong because it probably leaks undefined behaviour *)
+            []
+
         | _ -> todo ("emit_op " ^ JPrint.jopcode op)
         in
 

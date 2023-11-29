@@ -45,6 +45,8 @@ public class TestObjs {
         imoverloaded(); // discard (pop opcode)
 
         if ("hello".length() != 5) return 15;
+        if (false) throw new RuntimeException();
+
         return 0;
     }
 
