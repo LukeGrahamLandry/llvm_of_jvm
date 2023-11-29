@@ -400,7 +400,7 @@ let get_rtintrinsic ctx memo op =
 
 let forward_declare_method ctx m = 
     match m with
-    | AbstractMethod _ -> todo "AbstractMethod"
+    | AbstractMethod func -> todo ("forward_declare_method AbstractMethod " ^ JPrint.class_method_signature func.am_class_method_signature)
     | ConcreteMethod func ->
         let sign = func.cm_signature in
         let cls = fst (cms_split func.cm_class_method_signature) in
@@ -450,7 +450,7 @@ let field_of_cfs classes sign =
     let cls = get_class classes cs in
     get_field cls fs
 
-let find_func_inner referenced ctx comp sign  = 
+let find_func_inner referenced ctx comp sign = 
     match Hashtbl.find_opt comp.funcs_done sign with
     | Some f -> f
     | None -> (* haven't compiled yet *)
@@ -460,8 +460,10 @@ let find_func_inner referenced ctx comp sign  =
 
     match Hashtbl.find_opt comp.funcs_vtabled sign with
     | Some f -> 
-        Hashtbl.remove comp.funcs_vtabled sign;
-        Hashtbl.replace comp.func_queue sign f;
+        if referenced then
+            (Hashtbl.remove comp.funcs_vtabled sign;
+            Hashtbl.replace comp.func_queue sign f;
+            ()) else ();
         f
     | None -> (* haven't seen it yet *)
 
@@ -489,8 +491,8 @@ let find_global ctx comp sign =
 let parent_field_sign super =
     make_fs "__parent" (TObject (TClass super))
 
-let vtable_field_sign cn =
-    make_fs "__vtable" (TObject (TClass cn))
+let vtable_field_sign =
+    make_fs "__vtable" (TObject (TClass (make_cn "java.lang.Object")))
 
 let _fst3 (a, _, _) = a
 let snd3 (_, b, _) = b
@@ -506,10 +508,11 @@ let emit_vtable ctx comp class_name: vtableinfo =
     let name = replace_chars name ".$" '_' in
     let cls = get_class comp.classes class_name in
     assert (not (is_final cls));
+    eprintf "Emitting vtable for %s\n" name;
 
     
     (* if no super class (java.lang.Object), use an empty struct *)
-    let (superv_ty, superv_val) = (match cls with
+    let (superv_ty, _) = (match cls with
     | JInterface _ -> todo "interface emit_vtable"
     | JClass cls -> (match cls.c_super_class with
         | Some super -> 
@@ -548,18 +551,49 @@ let emit_vtable ctx comp class_name: vtableinfo =
         not (is_final_method m) && not (is_static_method m) && is_unique_method (get_method_signature m)
     ) (get_methods cls) in
 
-    (* walk up the chain *)
-    let _find_super_method childname _ms = 
+
+    let rec inheritance_chain childname = 
         let cls = get_class comp.classes childname in
         match cls with
-        | JInterface _ -> todo "interface emit_vtable"
+        | JInterface _ -> todo "interface find_closest_overload"
         | JClass cls -> (match cls.c_super_class with
             | Some super -> 
-                let (_, _, super_vtable) = Hashtbl.find comp.structs super in
-                let (_sv_ty, _sv_val, sv_fields, _) = Option.get super_vtable in
-                Some sv_fields 
-            | None -> None)
+                childname :: inheritance_chain super
+            | None -> [childname])
     in
+
+    (* walk up the chain. opposite thing as find_first_declaration *)
+    let rec find_closest_override childname ms = 
+        let cls = get_class comp.classes childname in
+        if defines_method cls ms then childname else 
+        match cls with
+        | JInterface _ -> todo "interface find_closest_overload"
+        | JClass cls -> (match cls.c_super_class with
+            | Some super -> 
+                find_closest_override super ms
+            | None -> todo "no super find_closest_overload")
+    in
+
+    let my_inheritance = drop_fst (inheritance_chain class_name) in
+    let eval_vtable nextclass prev_val =
+        let (_, _, next_vtable) = Hashtbl.find comp.structs nextclass in
+        let (vtable_ty, _, next_fields, _) = Option.get next_vtable in
+        let vtable_values = Hashtbl.fold (fun ms (field_index, _field_ty) prevfields ->
+            let firstclass = find_closest_override class_name ms in
+            (* eprintf "Fill vtable (class_name=%s) (ms=%s) (firstclass=%s)\n" (JPrint.class_name class_name) (JPrint.method_signature ms) (JPrint.class_name firstclass); *)
+            let func = find_func_inner false ctx comp (make_cms firstclass ms) in
+            (field_index, func) :: prevfields
+        ) next_fields [] in 
+        let vtable_values = List.sort (fun a b -> compare (fst a) (fst b)) vtable_values in
+        let vtable_values = List.map snd vtable_values in
+
+        let vtable_values = prev_val :: vtable_values in
+        const_named_struct vtable_ty (Array.of_list vtable_values)
+    in
+
+    let empty_value = const_struct ctx.context (Array.of_list []) in
+    let parent_vtable_value = List.fold_right eval_vtable my_inheritance empty_value in
+
 
     let add_method ms _value acc =
         let cms = make_cms class_name ms in
@@ -574,7 +608,8 @@ let emit_vtable ctx comp class_name: vtableinfo =
 
     let vtable_ty = named_struct_type ctx.context ("VTable_" ^ name) in
     struct_set_body vtable_ty (Array.of_list vstruct_fields) false;
-    let vstruct_values = superv_val :: List.map snd3 new_methods in
+
+    let vstruct_values = parent_vtable_value :: List.map snd3 new_methods in
     let vtable_value = const_named_struct vtable_ty (Array.of_list vstruct_values) in
     let vtable_value_ptr = define_global ("vtable_" ^ name) vtable_value ctx.the_module in
 
@@ -613,12 +648,21 @@ let rec find_class_lltype ctx comp class_name =
     in
     (* At this point, we've called find_class_lltype on every class in the chain, 
        so they're guarenteed to already have a struct/vtable.  *)
-    let (vtable, field_info) = if is_final cls 
-        then (None, field_info) 
+
+    let field_info = match super with
+    | None -> (* only java.lang.Object has a slot for the v-pointer *)
+        eprintf "None super class root vtable for %s\n" (JPrint.class_name class_name);
+        let vsign = vtable_field_sign in
+        (vsign, pointer_type ctx.context) :: field_info
+    | Some _ -> field_info
+    in
+
+    let vtable = if is_final cls 
+        then None
         else 
             let vtable = emit_vtable ctx comp class_name in
-            let vsign = vtable_field_sign class_name in
-            Some vtable, (vsign, pointer_type ctx.context) :: field_info in
+            Some vtable
+    in
 
     let field_types = List.map snd field_info in
     let field_info = List.mapi (fun i (sign, ty) -> 
@@ -649,7 +693,7 @@ let rec get_field_ptr ctx comp obj classname sign =
         | JInterface _ -> illegal "interfaces don't have fields (failed at inheitance chain?)"
         | JClass cls -> (match cls.c_super_class with
             | Some super -> super 
-            | None -> illegal "looking for field but no super class")
+            | None -> illegal ("looking for field but no super class. " ^ (JPrint.field_signature sign)))
         in
         
         (* alas, not a tail call *)
@@ -670,7 +714,7 @@ let rec vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue =
 
     (match Hashtbl.find_opt fields ms with
         | Some (field_index, _ty) ->
-            let vsign = vtable_field_sign cs in
+            let vsign = vtable_field_sign in
             let (vptr_field_ptr, _) = get_field_ptr ctx comp obj cs vsign in
             let vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
             let field_ptr = build_struct_gep vty vptr field_index (ms_name ms) ctx.builder in
@@ -943,7 +987,7 @@ let convert_method ctx code current_cms comp =
             if not (is_final (get_class comp.classes classname)) then 
                 let (_, _, vtable) = find_class_lltype ctx comp classname in
                 let (_, vptr_base, _fields, _) = Option.get vtable in
-                let (vptr_field, _vty) = get_field_ptr ctx comp obj classname (vtable_field_sign classname) in
+                let (vptr_field, _vty) = get_field_ptr ctx comp obj classname (vtable_field_sign) in
                 let _ = build_store vptr_base vptr_field ctx.builder in
 
                 () else ();
@@ -1026,7 +1070,7 @@ let convert_method ctx code current_cms comp =
 
 let emit_method ctx comp m = 
     match m with
-    | AbstractMethod _ -> todo "AbstractMethod"
+    | AbstractMethod func -> todo ("emit_method AbstractMethod " ^ JPrint.class_method_signature func.am_class_method_signature)
     | ConcreteMethod func ->
         let sign = func.cm_class_method_signature in
         assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
@@ -1078,6 +1122,7 @@ let () =
         match take_any comp.func_queue with
         | None -> ()
         | Some (cms, _) -> 
+            (* eprintf "Emitting code for %s\n" (JPrint.class_method_signature cms); *)
             let m = method_of_cms comp.classes cms in
             emit_method ctx comp m;
             emit_next ()

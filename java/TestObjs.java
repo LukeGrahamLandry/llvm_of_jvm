@@ -34,7 +34,9 @@ public class TestObjs {
         if (new NotFinal(2).overrideinfinalchild() != 4) return 11;
         TestObjs a = new NotFinal(2);
         if (a.overrideinfinalchild() != 4) return 12;
-        return 0;
+        // if (new DoOverride(2).overrideinfinalchild() != 12) return 13;
+        // return 0;
+        return new DoOverride(2).overrideinfinalchild();
     }
 
     // final methods can't be overriden so don't need dynamic dispatch 
@@ -92,9 +94,19 @@ public class TestObjs {
         NotFinal(int v) {
             super(v);
         }
-
         // no override overrideinfinalchild
         // requires simple vtable inheritance 
+    }
+
+    static class DoOverride extends TestObjs { 
+        DoOverride(int v) {
+            super(v);
+        }
+
+        // override and change behaviour. needs vtable inheritance 
+        int overrideinfinalchild() {
+            return this.field + 10;
+        }
     }
 
     // Not referenced and this class isn't a root so won't even try to compile these. 
