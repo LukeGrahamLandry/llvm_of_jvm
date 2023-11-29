@@ -5,7 +5,11 @@ For real dynamic dispatch, every object needs to start with a vtable. Struct of 
 Problematic: you want to making the vtable at the beginning but you don't know which are going to be called yet. 
 There are some methods I choke on but don't call. So need another level of queuing where its not referenced yet but has reserved an llvalue so if it is referenced, the function will be emitted into the place already referenced by the vtable. 
 
+llvm type checking is very sad day. was just getting bus error for a while because trying to read from vtable as object type? actually maybe that didnt fix. AAAASSDASDF. value first! `build_store vptr_base vptr_field ctx.builder` NOT `build_store vptr_field vptr_base ctx.builder`
+
 There's a speed/space trade off: do you make a chain of vtables that point to each other or does each subclass get a whole new one? Its such tiny space tho.
+
+
 
 ## Fields & Inheritance (Nov 28)
 

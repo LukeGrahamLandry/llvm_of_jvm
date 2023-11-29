@@ -494,7 +494,7 @@ let vtable_field_sign cn =
 
 let _fst3 (a, _, _) = a
 let snd3 (_, b, _) = b
-let trd3 (_, _, c) = c
+let _trd3 (_, _, c) = c
 
 
 let emit_vtable ctx comp class_name: vtableinfo = 
@@ -516,9 +516,11 @@ let emit_vtable ctx comp class_name: vtableinfo =
     in
     let method_ptrs = MethodMap.fold add_method methods [] in
 
-    let vtable_ty = named_struct_type ctx.context ("vtable_" ^ name) in
-    struct_set_body vtable_ty (Array.of_list (List.map trd3 method_ptrs)) false;
+    let vtable_ty = named_struct_type ctx.context ("VTable_" ^ name) in
+    struct_set_body vtable_ty (Array.of_list (List.map (fun _ -> pointer_type ctx.context) method_ptrs)) false;
     let vtable_value = const_named_struct vtable_ty (Array.of_list (List.map snd3 method_ptrs)) in
+    let vtable_value = define_global ("vtable_" ^ name) vtable_value ctx.the_module in
+    
 
     (* Given a method_signature and a vtable pointer, need to be able to lookup the function pointer to call
        so need to know which slot in the vtable it is stored. *)
@@ -600,24 +602,33 @@ let rec get_field_ptr ctx comp obj classname sign =
         
     | Some field -> (* The field was declared by this class. *)
         let (field_index, ty) = field in
-        let ptr = build_struct_gep obj_ty obj field_index "" ctx.builder in
+        let debug_field_name = fs_name sign in
+        let ptr = build_struct_gep obj_ty obj field_index debug_field_name ctx.builder in
         (ptr, ty)
 
 (* returns the function pointer to call *)
 let vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
     let (cs, ms) = cms_split sign in
     let (_, _, vtable) = find_class_lltype ctx comp cs in
-    let (_, _, fields) = Option.get vtable in
+    let (vty, _, fields) = Option.get vtable in
     let (field_index, _ty) = Hashtbl.find fields ms in
 
     let vsign = vtable_field_sign cs in
-    let (vptr, vty) = get_field_ptr ctx comp obj cs vsign in
-    let field_ptr = build_struct_gep vty vptr field_index "" ctx.builder in
+
+    let (vptr_field_ptr, _funcptrty) = get_field_ptr ctx comp obj cs vsign in
+    let vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
+
+    let field_ptr = build_struct_gep vty vptr field_index (ms_name ms) ctx.builder in
+
+    let _func_ty = llfunc_type ctx ms false in
 
     (* TODO: this traps at compiletime maybe dont have to dereference it because its a function pointer? *)
-    (* let fptr = build_load fty field_ptr "" ctx.builder in  *)
+    let fptr = build_load (pointer_type ctx.context) field_ptr "" ctx.builder in 
 
-    field_ptr
+    
+    (* let real_fptr = build_bitcast fptr func_ty "" ctx.builder in *)
+
+    fptr
 
 (*== Emiting llvm ir for a single method ==*)
 
@@ -869,11 +880,10 @@ let convert_method ctx code current_cms comp =
             if not (is_final (get_class comp.classes classname)) then 
                 let _ = eprintf "write vtable\n" in
 
-            (* trap here *)
-            let (_, _, vtable) = find_class_lltype ctx comp classname in
-            let (_, vptr_base, _fields) = Option.get vtable in
-            let (vptr_field, _vty) = get_field_ptr ctx comp obj classname (vtable_field_sign classname) in
-            let _ = build_store vptr_base vptr_field ctx.builder in
+                let (_, _, vtable) = find_class_lltype ctx comp classname in
+                let (_, vptr_base, _fields) = Option.get vtable in
+                let (vptr_field, _vty) = get_field_ptr ctx comp obj classname (vtable_field_sign classname) in
+                let _ = build_store vptr_base vptr_field ctx.builder in
 
                 () else ();
             obj :: compstack
@@ -1013,6 +1023,18 @@ let () =
     in
     emit_next ();
     assert (Hashtbl.length comp.func_queue == 0);
+
+    let rec emit_trap_func () = 
+        match take_any comp.funcs_vtabled with
+        | None -> ()
+        | Some (cms, func) -> 
+            let entry = append_block ctx.context "entry_trap" func in 
+            position_at_end entry ctx.builder;
+            let _ = build_unreachable ctx.builder in
+            Hashtbl.remove comp.funcs_vtabled cms;
+            emit_trap_func ()
+    in
+    emit_trap_func ();
     
     let code = string_of_llmodule ctx.the_module in
     print_endline code;

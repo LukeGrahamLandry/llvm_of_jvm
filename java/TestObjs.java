@@ -16,22 +16,22 @@ public class TestObjs {
         return a + hello.field;
     }
 
-    public static boolean sometests() {
-        if (importmebb(1) != 2) return false;
+    public static int sometests() {
+        if (importmebb(1) != 2) return 1;
 
         // == static dispatch == 
-        if (new TestObjs(2).addFieldFinal(3) != 5) return false;
-        if (new InheritedTestObjs(2).addFieldFinal(3) != 5) return false;
-        if (new InheritedTestObjs(2).parentfield() != 2) return false;
-        if (new InheritedTestObjs(2).mineownfield() != 4) return false;
-        if (new InheritedTestObjs(2).nonfinalbutclassfinal() != 3) return false;
-        if (new InheritedTestObjs(2).parentnonfinalbutclassfinal() != 3) return false;
-        if (new InheritedTestObjs(2).overrideinfinalchild() != 5) return false;
-        if (new AnotherFinalTestObjs(2).overrideinfinalchild() != 4) return false; // didn't override 
+        if (new TestObjs(2).addFieldFinal(3) != 5) return 2;
+        if (new InheritedTestObjs(2).addFieldFinal(3) != 5) return 3;
+        if (new InheritedTestObjs(2).parentfield() != 2) return 4;
+        if (new InheritedTestObjs(2).mineownfield() != 4) return 5;
+        if (new InheritedTestObjs(2).nonfinalbutclassfinal() != 3) return 6;
+        if (new InheritedTestObjs(2).parentnonfinalbutclassfinal() != 3) return 7;
+        if (new InheritedTestObjs(2).overrideinfinalchild() != 5) return 8;
+        if (new AnotherFinalTestObjs(2).overrideinfinalchild() != 4) return 9; // didn't override 
 
         // == dynamic dispatch == 
-        if (new TestObjs(2).overrideinfinalchild() != 4) return false; // didn't override 
-        return true;
+        if (new TestObjs(2).overrideinfinalchild() != 4) return 10; // didn't override 
+        return 0;
     }
 
     // final methods can't be overriden so don't need dynamic dispatch 

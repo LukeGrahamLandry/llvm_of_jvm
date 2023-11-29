@@ -224,7 +224,7 @@ public class OpTest {
         return TestObjs.importmebb(a);
     }
 
-    public static boolean objtest() {
+    public static int objtest() {
         return TestObjs.sometests();
     }
 }
