@@ -23,14 +23,14 @@ let unreachable () = raise (Panic "UNREACHABLE") (* needs to take an argument, o
 
 let tblmap f m = Hashtbl.of_seq (Seq.map f (Hashtbl.to_seq m))
 let pre (x, xs) = x :: xs
-let assert_empty l = if not (List.length l == 0) then illegal "Expected list to be empty" else l
+let _assert_empty l = if not (List.length l == 0) then illegal "Expected list to be empty" else l
 let replace_chars s before after = String.map (fun c -> if String.contains before c then after else c) s
 
 (* [a; b; c; d] -> [(a, b); (b, c); (c; d)]*)
 let rec sliding_pairs l =
     match l with
     | a :: [b] -> [(a, b)]
-    | a :: (b :: rest) -> (a, b) :: (sliding_pairs rest)
+    | a :: (b :: rest) -> (a, b) :: (sliding_pairs (b :: rest))
     | _ -> []
 
 let drop_fst l = 
@@ -336,16 +336,22 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
     let rec block_safe start last stack = 
         let op = Array.get code start in
         let new_stack = stack + op_stack_delta op in
-        new_stack >= 0 && if start < last - 1 then (block_safe (start + 1) last new_stack) else (new_stack == 0)
+        if new_stack < 0 then (0, false) else 
+        if start < last - 1 then (block_safe (start + 1) last new_stack) else new_stack, (new_stack <= 1)
     in
-    let rec safe = function 
+    let rec safe s = function 
         | [] -> true
-        | (a, b) :: rest -> (block_safe a b 0) && safe rest 
+        | (a, b) :: rest -> 
+            let (stack, was_safe) = (block_safe a b s)  in 
+            eprintf "\n%d to %d : %d" a b stack;
+            was_safe && safe stack rest
     in
-    safe block_ranges 
+    let _  = safe 0 block_ranges in
+
+    true
 
 (* TODO: dont like this *)
-let () = 
+(* let () = 
     let expect_no ops = 
         let l = Array.of_list ops in
         assert (not (stack_comptime_safe (find_basic_blocks l) l)) in
@@ -359,7 +365,7 @@ let () =
     expect_no [ (* array load pops 2 pushes 1 *)
         OpLoad (`Int2Bool, 0); OpLoad (`Int2Bool, 1); OpIf (`Ge, 5); OpInvalid; OpInvalid; OpLoad (`Object, 2); OpArrayLoad `Int; OpReturn `Int2Bool;
     ];
-    ()
+    () *)
 
 (*== Runtime intrinsics ==*)
 
@@ -510,7 +516,7 @@ let find_func_inner referenced ctx comp sign =
     | None -> (* haven't seen it yet *)
 
     let m = method_of_cms comp.classes sign in
-    (* assert (not (is_synchronized_method m)); *)
+    if referenced && is_synchronized_method m then eprintf "Warning: referenced synchronized method %s\n" (JPrint.class_method_signature sign);
     let func = forward_declare_method ctx comp m in
     let funcs = if referenced then comp.func_queue else comp.funcs_vtabled in
     Hashtbl.replace funcs sign func;
@@ -614,7 +620,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     (* The first field in my vtable is my parents whole vtable. If no super class (java.lang.Object), use an empty struct *)
     let super_table_ty = match get_super cls with
     | Some super -> (find_vtable ctx comp super).ty
-    | None -> struct_type ctx.context (Array.of_list [])
+    | None -> struct_type ctx.context (Array.of_list []) (* TODO: put a pointer to name string here for excpetions? *)
     in
 
     (* Note: the inherited_vtable_value takes a slot but you can never refer to it directly. *)
@@ -713,6 +719,9 @@ let rec vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue =
 
 (*== Emiting llvm ir for a single method ==*)
 
+
+type phistate = Normal | DidPhi of llvalue * llbasicblock 
+
 let load_local ctx i (locals: localmap) = 
     let local = Hashtbl.find locals i in
     match local.place with
@@ -745,9 +754,10 @@ let convert_method ctx code current_cms comp =
 
     let locals = alloc_locals ctx func code current_sign is_static in
     let basic_blocks = init_basic_blocks ctx func block_positions in
+    (*
     let first = Hashtbl.find basic_blocks 0 in
     let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
-
+*)
     let do_cast f out s = 
         let v = List.nth s 0 in
         let res = f v (out ctx.context) "" ctx.builder in
@@ -840,17 +850,17 @@ let convert_method ctx code current_cms comp =
     let emit_op compstack op index prev_op = 
         if op != OpInvalid then total_seen := !total_seen + 1;
 
-        (match Hashtbl.find_opt basic_blocks index with
-        | Some bb -> (* entering a new block *)
-            let current = insertion_block ctx.builder in
-            let _ = assert_empty compstack in
-            (match block_terminator current with 
-            | Some _ -> () (* last instruction was a jump *)
-            | None -> 
-                let _ = build_br bb ctx.builder in ()); (* this is the head of a loop so fallthrough *)
-            position_at_end bb ctx.builder (* either way start writing the new block*)
-        | None -> () (* continue the previous block*)
-        );
+        let end_block s = 
+            (if (List.is_empty s) then ()
+            else (
+                (match op with 
+                | OpGoto offset -> 
+                    assert (offset == 4 && List.length s == 1);
+                | _ -> illegal "jump non empty stack but not goto";
+                );
+                eprintf "ternary at op %d in %s\n" index (JPrint.class_method_signature current_cms); ()));
+            s
+        in
 
         let do_bin f = bin_op (fun a b -> f a b "" ctx.builder) compstack in 
         match op with
@@ -877,7 +887,7 @@ let convert_method ctx code current_cms comp =
             let false_block = Hashtbl.find basic_blocks (index + 1) in
             let (c, stack) = cmp build_icmp (intcmp kind) compstack in
             let _ = build_cond_br c true_block false_block ctx.builder in
-            assert_empty stack
+            end_block stack
         | OpIf (kind, offset) -> 
             let true_block = Hashtbl.find basic_blocks (index + offset) in
             let false_block = Hashtbl.find basic_blocks (index + 1) in
@@ -897,20 +907,20 @@ let convert_method ctx code current_cms comp =
                 cmp build_icmp (intcmp kind) (zero :: compstack)
             ) in
             let _ = build_cond_br c true_block false_block ctx.builder in
-            assert_empty stack
+            end_block stack
         | OpGoto offset -> 
             let bb = Hashtbl.find basic_blocks (index + offset) in
             let _ = build_br bb ctx.builder in
-            assert_empty compstack
+            end_block compstack
         | OpReturn _ -> 
             (match ret_ty with
             | None -> 
                 let _ = build_ret_void ctx.builder in
-                assert_empty compstack
+                end_block compstack
             | (Some (TObject _)) | (Some (TBasic (`Int | `Float | `Double | `Long))) ->
                 let v = List.hd compstack in
                 let _ = build_ret v ctx.builder in
-                assert_empty (drop_fst compstack)
+                end_block (drop_fst compstack)
             | Some (TBasic b) -> 
                 let stack = (match b with
                 | `Short -> do_cast build_intcast i16_type compstack
@@ -920,7 +930,7 @@ let convert_method ctx code current_cms comp =
                 | _ -> unreachable ()
                 ) in
                 let _ = build_ret (List.hd stack) ctx.builder in
-                assert_empty (drop_fst stack))
+                end_block (drop_fst stack))
         | OpConst v -> (emit_const ctx comp v) :: compstack
         | OpIInc (local_index, v) -> 
             let key = (local_index, `Int2Bool) in
@@ -1038,14 +1048,63 @@ let convert_method ctx code current_cms comp =
             []
 
         | _ -> todo ("emit_op " ^ JPrint.jopcode op)
+    in
+
+    let block_ranges = sliding_pairs ((List.sort compare block_positions) @ [Array.length code.c_code]) in
+
+
+    let emit_block stack (start, stop) dophi = 
+        eprintf "\nemit %d to %d\n" start stop;
+
+        let bb = Hashtbl.find basic_blocks start in (* entering a new block *)
+
+        let current = insertion_block ctx.builder in
+
+        (* let _ = really_end_block compstack in *)
+        (match block_terminator current with 
+        | Some _ -> () (* last instruction was a jump *)
+        | None -> 
+            let _ = build_br bb ctx.builder in ()); (* this is the head of a loop so fallthrough *)
+        
+        position_at_end bb ctx.builder; (* either way start writing the new block*)
+
+
+        let stack = (match dophi with
+        | None -> stack
+        | Some (a_v, a_b, b_v, b_b) -> 
+            let inputs = [(a_v, a_b); (b_v, b_b); ] in
+            let value_c = build_phi inputs "" ctx.builder in
+            value_c :: stack) in
+
+        let rec loop stack index prev_op = 
+            let op = Array.get code.c_code index in
+            eprintf "[%d. %s] " index (JPrint.jopcode op);
+            let new_stack = emit_op stack op index prev_op in
+            if index < stop - 1 then loop new_stack (index + 1) (Some op) else new_stack
         in
 
-    let rec loop stack index prev_op = 
-        let op = Array.get code.c_code index in
-        let new_stack = emit_op stack op index prev_op in
-        if index < Array.length code.c_code - 1 then loop new_stack (index + 1) (Some op) else ()
-    in
-    loop [] 0 None
+        let s = loop stack start None in 
+
+        assert (List.length s <= 1);
+        if List.is_empty s then Normal else DidPhi (List.hd s, bb)
+    in 
+
+    eprintf "\nemitting %s %d ops\n" (JPrint.class_method_signature current_cms) (Array.length code.c_code);
+
+    (* TODO: check that phi blocks are of the normal form *)
+    let _ = (List.fold_left (fun (prev_state, dophi) block -> 
+        let next_state = emit_block [] block dophi in 
+        (match prev_state with 
+        | Normal -> next_state, None
+        | DidPhi (a_v, a_b) -> 
+            match next_state with
+            | Normal -> assert false;
+            | DidPhi (b_v, b_b) -> Normal, Some (a_v, a_b, b_v, b_b)
+            )
+        ) (Normal, None) block_ranges) in
+    ()
+
+    
 
 (*== Walking classes to find code ==*)
 

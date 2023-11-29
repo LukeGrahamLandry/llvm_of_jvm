@@ -44,10 +44,16 @@ public class TestObjs {
 
         imoverloaded(); // discard (pop opcode)
 
-        if ("hello".length() != 5) return 15;
+        if ("hello".length() != 5) return 17;
         if (false) throw new RuntimeException();
+        if (ternary_max(1, 2) != 2) return 18;
+        if (ternary_max(2, 1) != 2) return 19;
 
         return 0;
+    }
+
+    static int ternary_max(int a, int b) {
+        return a > b ? a : b;
     }
 
     static int imoverloaded() {
