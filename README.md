@@ -18,6 +18,9 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - Casts between primitive types
 - Static methods, fields, initializer blocks, and native methods
 - Arrays and multidimensional arrays
+- Class fields
+- Inheritance
+- Virtual method calls
 
 ### Incomplete
 

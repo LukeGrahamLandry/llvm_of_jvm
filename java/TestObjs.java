@@ -37,9 +37,26 @@ public class TestObjs {
         if (new DoOverride(2).overrideinfinalchild() != 12) return 13;
         TestObjs b = new DoOverride(2);
         if (b.overrideinfinalchild() != 12) return 14;
+        // var aaa = Math.fma(1, 2, 3);  // TODO: why no compile?
+
+        if (imoverloaded() != 1) return 15;
+        if (imoverloaded(5) != 6) return 16;
+
+        imoverloaded(); // discard (pop opcode)
+
+        // TODO: mangling overloads
+        // if ("hello".length() != 5) return 15;
         return 0;
     }
 
+    static int imoverloaded() {
+        return 1;
+    }
+
+    static int imoverloaded(int a) {
+        return imoverloaded() + a;
+    }
+    
     // final methods can't be overriden so don't need dynamic dispatch 
     public final int addFieldFinal(int a) {
         return a + this.field;

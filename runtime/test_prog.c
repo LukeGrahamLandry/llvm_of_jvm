@@ -100,8 +100,8 @@ void optestjava() {
     assert(OpTest_arr_of_arr(3) == 66);
     assert(OpTest_nested_arr(2) == (2*3*4*5));
     assert(OpTest_useimported(49) == 50);
-    printf("===\nOpTest_objtest() = %d\n===\n", OpTest_objtest());
     assert(OpTest_objtest() == 0);
+    printf("Tests passed!\n");
 }
 
 // PrimitiveTemplateTYPE.txt

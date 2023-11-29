@@ -1,3 +1,7 @@
+## cleanup 
+
+- a bunch of places where i have really big tuples, replace them with structs so can have field names
+
 ## Dynamic Dispatch (Nov 28)
 
 For real dynamic dispatch, every object needs to start with a vtable. Struct of function pointers for function should be used for each method on this specific instance. 
