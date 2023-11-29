@@ -44,8 +44,7 @@ public class TestObjs {
 
         imoverloaded(); // discard (pop opcode)
 
-        // TODO: mangling overloads
-        // if ("hello".length() != 5) return 15;
+        if ("hello".length() != 5) return 15;
         return 0;
     }
 

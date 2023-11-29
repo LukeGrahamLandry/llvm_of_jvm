@@ -93,6 +93,20 @@ generic_array(i64, 6)
 generic_array(f32, 7)
 generic_array(f64, 8)
 
+
+void fill_string_const(Array_u16* arr, char* bytes) {
+    printf("fill_string_const %p %p\n", arr, bytes);
+    i32 len = array_length((AnyArray*) arr);
+    printf("len=%d bytes=%s\n", len, bytes);
+    for (i32 i=0;i<len;i++) {
+        u16 c = bytes[i];
+        array_set_u16(arr, i, c);
+    }
+
+    printf("done init string\n");
+}
+
+
 #undef generic_array
 #undef OBJ_TYPE_ID
 #undef NULL_CHK

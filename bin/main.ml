@@ -363,6 +363,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | ArrGet of jvm_array_type 
 | ArrSet of jvm_array_type 
 | ArrFillMulti of jvm_array_type
+| FillStr
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -375,6 +376,7 @@ let intrinsic_signature ctx op =
         | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
         | ArrLen -> "array_length", [arr_t], i_t
         | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
+        | FillStr -> "fill_string_const", [arr_t; arr_t], void_type ctx.context
     in
     (name, args, ret)
 
@@ -716,21 +718,6 @@ let bin_op (f: llvalue -> llvalue -> llvalue) compstack =
     (* Argument order matters for sub/div/rem *)
     (f b a) :: (drop_fst (drop_fst compstack))
 
-let emit_string_obj ctx s = 
-    let _data = const_stringz ctx s in
-    (* TODO: create an instance of the String class *)
-    todo "string constants"
-
-let emit_const ctx (v: jconst): llvalue = 
-    match v with
-    | `Int n -> const_int (i32_type ctx.context) (Int32.to_int n)
-    | (`Byte n) | (`Short n) -> const_int (i32_type ctx.context) n
-    | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
-    | `Float n -> const_float (float_type ctx.context) n
-    | `Double n -> const_float (double_type ctx.context) n
-    | `String s -> emit_string_obj ctx.context (jstr_raw s) (* TODO: do i need to deal with the modified utf8 thing *)
-    | _ -> todo "emit_const other types"
-
 let total_seen = ref 0  (* TODO: can remove. was just curious *)
 
 let convert_method ctx code current_cms comp = 
@@ -796,6 +783,47 @@ let convert_method ctx code current_cms comp =
             let v_func_ptr = vtable_lookup ctx comp target_cms (List.hd compstack) in
             call_method_inner false v_func_ptr target_sign compstack
     in
+    let make_new_uninit classname = 
+        let {ty; vtable; _} = find_class_lltype ctx comp classname in
+        let obj = build_malloc ty "" ctx.builder in
+        let vptr_field = fst (get_field_ptr ctx comp obj classname (vtable_field_sign)) in
+        let _ = build_store vtable.value_ptr vptr_field ctx.builder in
+        obj
+    in
+    let emit_string_obj ctx comp s = 
+        let len = String.length s in
+        let len = const_int (i32_type ctx.context) len in
+        let data = const_stringz ctx.context s in
+        let data = define_global "tempstrconst" data ctx.the_module in
+        let str_cls = (make_cn "java.lang.String") in
+        let obj = make_new_uninit str_cls in
+
+        let char_ty = (TBasic `Char) in
+        let value_field_sign = make_fs "value" (TObject (TArray char_ty)) in 
+
+        let chars_array = fst (call_intin (ArrInit (arraytype_of_valuetype char_ty)) [len]) in
+
+        let (value_field_ptr, _) = get_field_ptr ctx comp obj str_cls value_field_sign in
+        let _ = build_store chars_array value_field_ptr ctx.builder in
+
+        let _ = fst (call_intin (FillStr) [data; chars_array; ]) in
+
+
+        (* TODO: create an instance of the String class *)
+        (* todo "string constants" *)
+        obj
+    in
+    let emit_const ctx comp (v: jconst): llvalue = 
+        match v with
+        | `Int n -> const_int (i32_type ctx.context) (Int32.to_int n)
+        | (`Byte n) | (`Short n) -> const_int (i32_type ctx.context) n
+        | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
+        | `Float n -> const_float (float_type ctx.context) n
+        | `Double n -> const_float (double_type ctx.context) n
+        | `String s -> emit_string_obj ctx comp (jstr_raw s) (* TODO: do i need to deal with the modified utf8 thing *)
+        | _ -> todo "emit_const other types"
+    in
+    
     let emit_op compstack op index prev_op = 
         if op != OpInvalid then total_seen := !total_seen + 1;
 
@@ -877,7 +905,7 @@ let convert_method ctx code current_cms comp =
                 ) in
                 let _ = build_ret (List.hd stack) ctx.builder in
                 assert_empty (drop_fst stack))
-        | OpConst v -> (emit_const ctx v) :: compstack
+        | OpConst v -> (emit_const ctx comp v) :: compstack
         | OpIInc (local_index, v) -> 
             let key = (local_index, `Int2Bool) in
             let old_val = load_local ctx key locals in
@@ -922,11 +950,7 @@ let convert_method ctx code current_cms comp =
             call_maybe_virtual classname target_sign compstack
         
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
-            let {ty; vtable; _} = find_class_lltype ctx comp classname in
-            let obj = build_malloc ty "" ctx.builder in
-            let vptr_field = fst (get_field_ptr ctx comp obj classname (vtable_field_sign)) in
-            let _ = build_store vtable.value_ptr vptr_field ctx.builder in
-            obj :: compstack
+            make_new_uninit classname :: compstack
         
         | OpGetField (cls, sign) -> 
             let (ptr, ty) = get_field_ptr ctx comp (List.hd compstack) cls sign in
