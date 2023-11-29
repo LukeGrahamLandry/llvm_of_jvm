@@ -31,6 +31,9 @@ public class TestObjs {
 
         // == dynamic dispatch == 
         if (new TestObjs(2).overrideinfinalchild() != 4) return 10; // didn't override 
+        if (new NotFinal(2).overrideinfinalchild() != 4) return 11;
+        TestObjs a = new NotFinal(2);
+        if (a.overrideinfinalchild() != 4) return 12;
         return 0;
     }
 
@@ -83,6 +86,15 @@ public class TestObjs {
         AnotherFinalTestObjs(int v) {
             super(v);
         }
+    }
+
+    static class NotFinal extends TestObjs {
+        NotFinal(int v) {
+            super(v);
+        }
+
+        // no override overrideinfinalchild
+        // requires simple vtable inheritance 
     }
 
     // Not referenced and this class isn't a root so won't even try to compile these. 

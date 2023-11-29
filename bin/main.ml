@@ -422,7 +422,7 @@ let emit_static_field ctx anyfield =
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
 
-type vtableinfo = lltype * llvalue * (method_signature, int * lltype) Hashtbl.t
+type vtableinfo = lltype * llvalue * (method_signature, int * lltype) Hashtbl.t * llvalue
 
 type compilation = {
     classes: class_path;
@@ -498,14 +498,68 @@ let _trd3 (_, _, c) = c
 
 
 let emit_vtable ctx comp class_name: vtableinfo = 
+    match Hashtbl.find_opt comp.structs class_name with
+    | Some (_, _, vtable) -> Option.get vtable
+    | None -> (* haven't seen yet *)
+
     let name = JPrint.class_name class_name in
     let name = replace_chars name ".$" '_' in
     let cls = get_class comp.classes class_name in
     assert (not (is_final cls));
-    eprintf "emit vtable for %s\n" name; 
+
+    
+    (* if no super class (java.lang.Object), use an empty struct *)
+    let (superv_ty, superv_val) = (match cls with
+    | JInterface _ -> todo "interface emit_vtable"
+    | JClass cls -> (match cls.c_super_class with
+        | Some super -> 
+            let (_, _, super_vtable) = Hashtbl.find comp.structs super in
+            let (sv_ty, _sv_val_ptr, _sv_fields, sv_val) = Option.get super_vtable in
+            (sv_ty, sv_val)
+        | None -> 
+            let empty_struct = struct_type ctx.context (Array.of_list []) in 
+            let empty_value = const_struct ctx.context (Array.of_list []) in 
+            (empty_struct, empty_value)
+            ))
+    in
+
+    (* walk up the chain and find the one who isn't overriding the method *)
+    let rec find_first_declaration cn ms = 
+        let check_cls = get_class comp.classes cn in
+        let i_declare = defines_method check_cls ms in
+        match check_cls with
+        | JInterface _ -> todo "interface find_first_declaration"
+        | JClass cls -> (match cls.c_super_class with
+            | Some super -> 
+                let upchain = find_first_declaration super ms in
+                (match upchain with
+                | Some c -> Some c
+                | None -> 
+                    if i_declare then Some cn else None)
+            | None -> (* no super class. either I declare it or I don't *)
+                if i_declare then Some cn else None)
+    in
+
+    let is_unique_method ms = 
+        cn_equal class_name (Option.get (find_first_declaration class_name ms))
+    in
+
     let methods = MethodMap.filter (fun m -> 
-        not (is_final_method m) && not (is_static_method m)
+        not (is_final_method m) && not (is_static_method m) && is_unique_method (get_method_signature m)
     ) (get_methods cls) in
+
+    (* walk up the chain *)
+    let _find_super_method childname _ms = 
+        let cls = get_class comp.classes childname in
+        match cls with
+        | JInterface _ -> todo "interface emit_vtable"
+        | JClass cls -> (match cls.c_super_class with
+            | Some super -> 
+                let (_, _, super_vtable) = Hashtbl.find comp.structs super in
+                let (_sv_ty, _sv_val, sv_fields, _) = Option.get super_vtable in
+                Some sv_fields 
+            | None -> None)
+    in
 
     let add_method ms _value acc =
         let cms = make_cms class_name ms in
@@ -514,21 +568,23 @@ let emit_vtable ctx comp class_name: vtableinfo =
         let func_ty = llfunc_type ctx ms false in
         (ms, func, func_ty) :: acc 
     in
-    let method_ptrs = MethodMap.fold add_method methods [] in
+
+    let new_methods = MethodMap.fold add_method methods [] in
+    let vstruct_fields = superv_ty :: (List.map (fun _ -> pointer_type ctx.context) new_methods) in
 
     let vtable_ty = named_struct_type ctx.context ("VTable_" ^ name) in
-    struct_set_body vtable_ty (Array.of_list (List.map (fun _ -> pointer_type ctx.context) method_ptrs)) false;
-    let vtable_value = const_named_struct vtable_ty (Array.of_list (List.map snd3 method_ptrs)) in
-    let vtable_value = define_global ("vtable_" ^ name) vtable_value ctx.the_module in
-    
+    struct_set_body vtable_ty (Array.of_list vstruct_fields) false;
+    let vstruct_values = superv_val :: List.map snd3 new_methods in
+    let vtable_value = const_named_struct vtable_ty (Array.of_list vstruct_values) in
+    let vtable_value_ptr = define_global ("vtable_" ^ name) vtable_value ctx.the_module in
 
     (* Given a method_signature and a vtable pointer, need to be able to lookup the function pointer to call
        so need to know which slot in the vtable it is stored. *)
     let field_info = List.mapi (fun i (sign, _func, func_ty) -> 
-        (sign, (i, func_ty))
-        ) method_ptrs in
+        (sign, (1 + i, func_ty)) (* 1 slot taken by super vtable *)
+        ) new_methods in
     let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
-    (vtable_ty, vtable_value, field_slots)
+    (vtable_ty, vtable_value_ptr, field_slots, vtable_value)
 
 
 let rec find_class_lltype ctx comp class_name = 
@@ -607,28 +663,35 @@ let rec get_field_ptr ctx comp obj classname sign =
         (ptr, ty)
 
 (* returns the function pointer to call *)
-let vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
+let rec vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
     let (cs, ms) = cms_split sign in
     let (_, _, vtable) = find_class_lltype ctx comp cs in
-    let (vty, _, fields) = Option.get vtable in
-    let (field_index, _ty) = Hashtbl.find fields ms in
+    let (vty, _, fields, _) = Option.get vtable in
 
-    let vsign = vtable_field_sign cs in
+    (match Hashtbl.find_opt fields ms with
+        | Some (field_index, _ty) ->
+            let vsign = vtable_field_sign cs in
+            let (vptr_field_ptr, _) = get_field_ptr ctx comp obj cs vsign in
+            let vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
+            let field_ptr = build_struct_gep vty vptr field_index (ms_name ms) ctx.builder in
+            let _func_ty = llfunc_type ctx ms false in
+            let fptr = build_load (pointer_type ctx.context) field_ptr "vfunc" ctx.builder in 
+            fptr
 
-    let (vptr_field_ptr, _funcptrty) = get_field_ptr ctx comp obj cs vsign in
-    let vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
-
-    let field_ptr = build_struct_gep vty vptr field_index (ms_name ms) ctx.builder in
-
-    let _func_ty = llfunc_type ctx ms false in
-
-    (* TODO: this traps at compiletime maybe dont have to dereference it because its a function pointer? *)
-    let fptr = build_load (pointer_type ctx.context) field_ptr "" ctx.builder in 
-
+        | None -> 
+            let super = match (get_class comp.classes cs) with
+            | JInterface _ -> todo "vtable_lookup"
+            | JClass cls -> (match cls.c_super_class with
+                | Some super -> super 
+                | None -> illegal ("vtable_lookup failed " ^ (JPrint.class_method_signature sign)))
+            in
+            
+            (* if its not in my vtable, ask the parent. an instance of the child is a valid instance of the parent *)
+            vtable_lookup ctx comp (make_cms super ms) obj 
+            )        
     
-    (* let real_fptr = build_bitcast fptr func_ty "" ctx.builder in *)
 
-    fptr
+   
 
 (*== Emiting llvm ir for a single method ==*)
 
@@ -857,7 +920,7 @@ let convert_method ctx code current_cms comp =
             else if classfinal then (* nobody past us can override *)
                 call_method foundclass target_sign false compstack
             else
-                let _ = eprintf "call vtable" in
+                let _ = eprintf "call vtable\n" in
                 let obj = List.hd compstack in (* TODO: that might be last arg instead of first *)
                 let fptr = vtable_lookup ctx comp (make_cms classname target_sign) obj in
                 
@@ -878,10 +941,8 @@ let convert_method ctx code current_cms comp =
             let (ty, _, _) = find_class_lltype ctx comp classname in
             let obj = build_malloc ty "" ctx.builder in
             if not (is_final (get_class comp.classes classname)) then 
-                let _ = eprintf "write vtable\n" in
-
                 let (_, _, vtable) = find_class_lltype ctx comp classname in
-                let (_, vptr_base, _fields) = Option.get vtable in
+                let (_, vptr_base, _fields, _) = Option.get vtable in
                 let (vptr_field, _vty) = get_field_ptr ctx comp obj classname (vtable_field_sign classname) in
                 let _ = build_store vptr_base vptr_field ctx.builder in
 

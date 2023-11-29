@@ -10,6 +10,8 @@ llvm type checking is very sad day. was just getting bus error for a while becau
 There's a speed/space trade off: do you make a chain of vtables that point to each other or does each subclass get a whole new one? Its such tiny space tho.
 
 
+for inheriting vtable, there's no const_load so need to keep around both the value and the pointer to the global containing the value 
+
 
 ## Fields & Inheritance (Nov 28)
 
