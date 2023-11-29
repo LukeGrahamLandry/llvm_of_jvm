@@ -10,7 +10,9 @@ llvm type checking is very sad day. was just getting bus error for a while becau
 There's a speed/space trade off: do you make a chain of vtables that point to each other or does each subclass get a whole new one? Its such tiny space tho.
 
 
-for inheriting vtable, there's no const_load so need to keep around both the value and the pointer to the global containing the value 
+for inheriting vtable, there's no const_load so need to keep around both the value and the pointer to the global containing the value. 
+
+long time spent on i was emitting unreachable for a method called virtually because it got seen by the vtable thing first so it declared it but it never saw it actually get called. TODO: make it an assertion not evil llvm magic whatever it wants unreachable. which.... means it is infact calling the right method. so i do infact have working vtables, i just also have dead code elimination that fucks them up. 
 
 
 ## Fields & Inheritance (Nov 28)

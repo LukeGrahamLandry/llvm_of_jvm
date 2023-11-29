@@ -432,6 +432,7 @@ type compilation = {
     funcs_done: (class_method_signature, llvalue) Hashtbl.t; (* already compiled *)
     globals: (class_field_signature, localinfo) Hashtbl.t; (* static fields *)
     structs: (class_name, lltype * (field_signature, int * lltype) Hashtbl.t * vtableinfo option) Hashtbl.t;
+    virtually_called: (class_method_signature, unit) Hashtbl.t;
 }
 
 let is_static_cms classes sign = 
@@ -488,15 +489,33 @@ let find_global ctx comp sign =
     Hashtbl.replace comp.globals sign global;
     global
 
-let parent_field_sign super =
+let parent_field_sign super = (* It's a bit misleading to say this is the type of the field because its an inlined struct not a pointer. *)
     make_fs "__parent" (TObject (TClass super))
 
-let vtable_field_sign =
+let vtable_field_sign = (* TODO: its very cringe that im saying a java type here but it works for now *)
     make_fs "__vtable" (TObject (TClass (make_cn "java.lang.Object")))
 
 let _fst3 (a, _, _) = a
 let snd3 (_, b, _) = b
 let _trd3 (_, _, c) = c
+
+
+
+(* walk up the chain and find the one who isn't overriding the method *)
+let rec find_first_declaration comp cn ms = 
+    let check_cls = get_class comp.classes cn in
+    let i_declare = defines_method check_cls ms in
+    match check_cls with
+    | JInterface _ -> todo "interface find_first_declaration"
+    | JClass cls -> (match cls.c_super_class with
+        | Some super -> 
+            let upchain = find_first_declaration comp super ms in
+            (match upchain with
+            | Some c -> Some c
+            | None -> 
+                if i_declare then Some cn else None)
+        | None -> (* no super class. either I declare it or I don't *)
+            if i_declare then Some cn else None)
 
 
 let emit_vtable ctx comp class_name: vtableinfo = 
@@ -526,25 +545,8 @@ let emit_vtable ctx comp class_name: vtableinfo =
             ))
     in
 
-    (* walk up the chain and find the one who isn't overriding the method *)
-    let rec find_first_declaration cn ms = 
-        let check_cls = get_class comp.classes cn in
-        let i_declare = defines_method check_cls ms in
-        match check_cls with
-        | JInterface _ -> todo "interface find_first_declaration"
-        | JClass cls -> (match cls.c_super_class with
-            | Some super -> 
-                let upchain = find_first_declaration super ms in
-                (match upchain with
-                | Some c -> Some c
-                | None -> 
-                    if i_declare then Some cn else None)
-            | None -> (* no super class. either I declare it or I don't *)
-                if i_declare then Some cn else None)
-    in
-
     let is_unique_method ms = 
-        cn_equal class_name (Option.get (find_first_declaration class_name ms))
+        cn_equal class_name (Option.get (find_first_declaration comp class_name ms))
     in
 
     let methods = MethodMap.filter (fun m -> 
@@ -708,6 +710,8 @@ let rec get_field_ptr ctx comp obj classname sign =
 
 (* returns the function pointer to call *)
 let rec vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
+    (* TODO: somehow make sure that anything this could possibly be calling gets moved to the queue *)
+    eprintf "Vtable Lookup for %s\n" (JPrint.class_method_signature sign);
     let (cs, ms) = cms_split sign in
     let (_, _, vtable) = find_class_lltype ctx comp cs in
     let (vty, _, fields, _) = Option.get vtable in
@@ -964,7 +968,10 @@ let convert_method ctx code current_cms comp =
             else if classfinal then (* nobody past us can override *)
                 call_method foundclass target_sign false compstack
             else
-                let _ = eprintf "call vtable\n" in
+                let _ = eprintf "virtual call %s\n" (JPrint.class_method_signature (make_cms classname target_sign)) in
+                let base_method = Option.get( find_first_declaration comp classname target_sign) in
+                Hashtbl.replace comp.virtually_called (make_cms base_method target_sign) ();
+
                 let obj = List.hd compstack in (* TODO: that might be last arg instead of first *)
                 let fptr = vtable_lookup ctx comp (make_cms classname target_sign) obj in
                 
@@ -979,7 +986,7 @@ let convert_method ctx code current_cms comp =
                 let (new_stack, arg_values) = pop_n compstack arg_count in
                 let result = build_call func_ty func_value (Array.of_list arg_values) "" ctx.builder in
                 if (ms_rtype target_sign) == None then new_stack else (result :: new_stack)
-
+                (* TODO: at this point you need to somehow move any varient of this method from funcs_vtabled to func_queue *)
         
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
             let (ty, _, _) = find_class_lltype ctx comp classname in
@@ -1104,6 +1111,7 @@ let () =
         funcs_done = Hashtbl.create 0; 
         globals = Hashtbl.create 0; 
         structs = Hashtbl.create 0; 
+        virtually_called = Hashtbl.create 0; 
     } in
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)
@@ -1129,18 +1137,40 @@ let () =
     in
     emit_next ();
     assert (Hashtbl.length comp.func_queue == 0);
+    
 
     let rec emit_trap_func () = 
         match take_any comp.funcs_vtabled with
         | None -> ()
         | Some (cms, func) -> 
-            let entry = append_block ctx.context "entry_trap" func in 
-            position_at_end entry ctx.builder;
-            let _ = build_unreachable ctx.builder in
+            let (cs, ms) = cms_split cms in
+            let base_method = Option.get (find_first_declaration comp cs ms) in
+            let base_method = (make_cms base_method ms) in
+            let has_vcall = not (Hashtbl.find_opt comp.virtually_called base_method == None) in
             Hashtbl.remove comp.funcs_vtabled cms;
+            if has_vcall then (
+                let vcalls = Hashtbl.length comp.virtually_called in
+                Hashtbl.replace comp.func_queue cms func;
+                emit_next ();
+                (* TODO: the method you just did might have added things to virtually_called that you already emitted a trap for *)
+                assert (vcalls == Hashtbl.length comp.virtually_called);
+                ()
+            ) else (
+                eprintf "WARNING: emit unreachable method stub for [%s] extends [%s] %b\n" (JPrint.class_method_signature cms) (JPrint.class_method_signature base_method) has_vcall;
+                let entry = append_block ctx.context "entry_trap" func in 
+                position_at_end entry ctx.builder;
+                let _ = build_unreachable ctx.builder in
+                ()
+            );
+
             emit_trap_func ()
     in
     emit_trap_func ();
+
+    Hashtbl.iter (fun key _ -> 
+        eprintf "vcall[%s]\n" (JPrint.class_method_signature key)
+            
+        ) comp.virtually_called;
     
     let code = string_of_llmodule ctx.the_module in
     print_endline code;

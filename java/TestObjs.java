@@ -34,9 +34,10 @@ public class TestObjs {
         if (new NotFinal(2).overrideinfinalchild() != 4) return 11;
         TestObjs a = new NotFinal(2);
         if (a.overrideinfinalchild() != 4) return 12;
-        // if (new DoOverride(2).overrideinfinalchild() != 12) return 13;
-        // return 0;
-        return new DoOverride(2).overrideinfinalchild();
+        if (new DoOverride(2).overrideinfinalchild() != 12) return 13;
+        TestObjs b = new DoOverride(2);
+        if (b.overrideinfinalchild() != 12) return 14;
+        return 0;
     }
 
     // final methods can't be overriden so don't need dynamic dispatch 
@@ -117,5 +118,9 @@ public class TestObjs {
             System.out.println("You'll never see this.");
         });
         nocompile.start();
+    }
+
+    public void luckyimnotanentrypoint_instance() {
+        luckyimnotanentrypoint();
     }
 }
