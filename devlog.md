@@ -1,10 +1,37 @@
-## string constants (Nov 29) 
+## 
+
+need to emit `<clinit>` for static blocks even if never referenced (since it will never be) but alas now its actually trying to set all the random fields on Throwable which uses new constant types. For now try just doing them as null pointers. Then it tries to call abstractcollection.size which i can't do yet. Leave that test for now, need to do abstract methods soon anyway. 
+
+trying to do abstract methods: 
+out/test.ll:1416:41: error: base of getelementptr must be a pointer
+  %vptr65 = load ptr, ptr addrspace(32) getelementptr inbounds (%TestObjs_A, i32 5, i32 0, i32 0), align 8
+
+if you just use the obj ptr as the vtable field ptr it tries to read.... the number 5.... more accuritely it tries to read the argument im trying to pass to the function. i thought i was just confused trying to read the gep ir but yeah it was just doing something dumb. god dman it. abstract methods were in fact trivial i wasnt crazy just dumb. i guess i never tried to call a virtual method with an argument befoer and i was looking at the stack backwards as i often do. i remember writing a comment next to that to check if i had the order right and then deleting it cause hey it works probably fine. thats deeply frustraiting, should really not do this while tired. 
+just to reasure myself im not out of a job, chatgpt doesnt catch that until i point out the problem to it `https://chat.openai.com/c/66fd04bf-3069-4cc5-858e-eb79fce50b86`, still kinda impressive tho. 
+
+# ternary operator (Nov 29)
+
+seems to always have the form 
+
+```
+14: if_icmple     21
+17: iload_0
+18: goto          22
+21: iload_1
+```
+
+actually not quite that simple, its allowed to do extra work in each branch. 
+but the structure of branching to different blocks and each block leaving one thing on the stack seems to persist. 
+
+## string constants & throw (Nov 29) 
 
 String constants need to be an instance of the String class so I need to do a kinda weird switchero where I make an object for any strings you need. In llvm I can emit a string constant that's just a byte array and then need to put that in a global so i have a `&[u8]` instead of a `[u8]`. Then need to make a char array out of that. So write a little rt_intrinsic that loops over an empty char array and fills in bytes from a `char*`. The whole thing where java chars are officially a u16 but they maybe do string compaction and store strings as ascii when possible is gonna be scary. Now I can't actually call the string constructor because they use an empty string literal in there which is kinda funny (even the one that takes a char array has a special case if length is zero). 
 
 And I don't have exceptions yet so I can't call most methods. They also use `?` everywhere and many methods take a CharSequence but I don't have interfaces yet. So I technically have strings but it seems `length()` is the only method you can actually call. 
 
 Right now you get a new object each time a string constant is evaluated. Need to move that into a static block or something so strings with the same value reuse the objects since they're immutable. 
+
+Implimented very primitive fatal exceptions so i can at least compile `throw` (no try/catch yet), just call an intrinsic to log a message and exit the program. That's enough to call into libraries that use exceptions as panics (not as control flow). When it throws the bytecode constructs an instance of Throwable and then does an opthrow on it. I don't have runtime typeinfo yet so my message just logs the address of the struct which is not super useful. Alas that means now i reference throwable which is a whole can of worms it turns out. 
 
 ## Dynamic Dispatch (Nov 28)
 

@@ -45,15 +45,70 @@ public class TestObjs {
         imoverloaded(); // discard (pop opcode)
 
         if ("hello".length() != 5) return 17;
-        if (false) throw new RuntimeException();
+        if (false) throw new RuntimeException(); 
+        assertzero(0);
         if (ternary_max(1, 2) != 2) return 18;
         if (ternary_max(2, 1) != 2) return 19;
+        if (ternary_max_harder(1, 2) != 2) return 18;
+        if (ternary_max_harder(2, 1) != 2) return 19;
+        if (Math.max(5, 10) != 10) return 20;
+        var empty = new String(); 
+        if (globalinnonentry != 15) return 21;
 
+        // == abstract methods == 
+        var aaaa = new B();
+        if (new B().overrideonly() != 50) return 22;
+        if (new B().overrideonlywitharg(10) != 100) return 23;
+
+        // Need string builder abstract method for concat in error message in outofboundexception
+        // var v = "hi".charAt(0);
+
+        // doesn't work either
+        // something in byte[] java.lang.StringCoding.encode(char[], int, int) (not comptime stack safe?)
+        // var vv = "hi".getBytes();
+        
         return 0;
+    }
+
+
+    public static abstract class A {
+        abstract int overrideonly();
+        abstract int overrideonlywitharg(int a);
+
+        float nocalla() {
+            return 1.0f;
+        }
+    }
+
+    public static class B extends A {
+        int overrideonly() {
+            return 50;
+        }
+
+        int overrideonlywitharg(int a) {
+            return a * 10;
+        }
+
+        float nocallb() {
+            return 1.0f;
+        }
+
+    }
+
+    static int globalinnonentry = 15;
+
+    static void assertzero(int a) {
+        // TODO: fix Throwable clinit
+        // NOT YET IMPLEMENTED: forward_declare_method AbstractMethod int java.util.AbstractCollection.size()
+        // if (a != 0) throw new RuntimeException();
     }
 
     static int ternary_max(int a, int b) {
         return a > b ? a : b;
+    }
+
+    static int ternary_max_harder(int a, int b) {
+        return -((a + 1 + 2 + 3) > (b + 1 + 2 + 3) ? -a : -b);
     }
 
     static int imoverloaded() {

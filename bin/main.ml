@@ -343,14 +343,16 @@ let stack_comptime_safe (block_starts: int list) (code: jopcode array) =
         | [] -> true
         | (a, b) :: rest -> 
             let (stack, was_safe) = (block_safe a b s)  in 
-            eprintf "\n%d to %d : %d" a b stack;
+            (* TODO: need to require that the second phi block doesn't pop the stack but allow the reconnecting block to pop the result *)
             was_safe && safe stack rest
     in
     let _  = safe 0 block_ranges in
 
+    (* TODO: I'm ignoring cause it doesnt work!!! *)
     true
 
 (* TODO: dont like this *)
+(* TODO: update for new safety requirements. basic phi is allowed but branch may not pop the stack. must be exactly two branches. must have only one incoming block *)
 (* let () = 
     let expect_no ops = 
         let l = Array.of_list ops in
@@ -456,7 +458,10 @@ let mangled_name comp sign = (* TODO: this should be deterministic not based on 
 
 let forward_declare_method ctx comp m = 
     match m with
-    | AbstractMethod func -> todo ("forward_declare_method AbstractMethod " ^ JPrint.class_method_signature func.am_class_method_signature)
+    | AbstractMethod func -> (* this will get filled in with `unreachable`*)
+        let name = mangled_name comp func.am_class_method_signature in
+        let ty = llfunc_type ctx func.am_signature false in
+        declare_function name ty ctx.the_module
     | ConcreteMethod func ->
         let name = mangled_name comp func.cm_class_method_signature in
         let ty = llfunc_type ctx func.cm_signature func.cm_static in
@@ -474,9 +479,7 @@ let emit_static_field ctx anyfield =
         let name = replace_chars (cn_name cls) ".$" '_' in
         let name = name ^ "_" ^ (fs_name field.cf_signature) in 
         let init_val = match jty with
-        | TObject c -> 
-            eprintf "%s\n" ("static field holding object: " ^ name ^ ": " ^ (JPrint.object_type c));
-            const_null ty
+        | TObject _ -> const_null ty
         | TBasic _ -> const_int ty 0 in
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
@@ -537,8 +540,13 @@ let find_global ctx comp sign =
 let parent_field_sign super = (* It's a bit misleading to say this is the type of the field because its an inlined struct not a pointer. *)
     make_fs "__parent" (TObject (TClass super))
 
+
+let tobjcls = 
+    (TObject (TClass (make_cn "java.lang.Object")))
+
+    (* is it like remembering the first type you write to the pointer in obj somehow? *)
 let vtable_field_sign = (* TODO: its very cringe that im saying a java type here but it works for now *)
-    make_fs "__vtable" (TObject (TClass (make_cn "java.lang.Object")))
+    make_fs "__vtable" tobjcls
 
 (* walk up the chain and find the one who isn't overriding the method 
    Ie. Integer.toString returns Object *)
@@ -644,7 +652,7 @@ let rec find_class_lltype ctx comp class_name =
     | None -> (* haven't seen yet *)
     
     let cls = get_class comp.classes class_name in
-    let fields = get_fields cls in
+    let fields = FieldMap.filter (fun f -> not (is_static_field f)) (get_fields cls) in
     let add_field sign _value acc = 
         let ty = lltype_of_valuetype ctx (fs_type sign) in
         (sign, ty) :: acc
@@ -679,6 +687,11 @@ let rec find_class_lltype ctx comp class_name =
     struct_set_body ll (Array.of_list field_types) is_packed;
     let v = { ty=ll; fields=field_slots; vtable } in
     Hashtbl.replace comp.structs class_name v;
+
+    (* TODO: force reference <clinit> even if it isnt an entry point *)
+    let clinit_ms = make_ms "<clinit>" [] None in
+    let has_static_block = defines_method cls clinit_ms in
+    (if has_static_block then let _ = find_func ctx comp (make_cms class_name clinit_ms) in ());
     v
 
 let rec get_field_ptr ctx comp obj classname sign =
@@ -698,23 +711,28 @@ let rec get_field_ptr ctx comp obj classname sign =
         (ptr, field.ty)
 
 (* returns the function pointer to call *)
-let rec vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
+let vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
     let (cs, ms) = cms_split sign in
     let vtable = find_vtable ctx comp cs in
 
     match Hashtbl.find_opt vtable.fields ms with
         | Some { index=field_index; _ } ->
             let vsign = vtable_field_sign in
-            let (vptr_field_ptr, _) = get_field_ptr ctx comp obj cs vsign in
+            (* let vptr_field_ptr = obj in This also works cause vtable is first field but feels kinda cringe somehow  *)
+            let (vptr_field_ptr, vptrty) = get_field_ptr ctx comp obj cs vsign in
+            
+            (* if these fail you're probably not passing garbage as the obj parameter. reading the stack backwards? *)
+            assert (address_space vptrty == 0);
+            assert (vptrty == (type_of vptr_field_ptr)); 
+            assert (address_space (type_of vptr_field_ptr) == 0);
+
             let vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
             let field_ptr = build_struct_gep vtable.ty vptr field_index (ms_name ms) ctx.builder in
             let fptr = build_load (pointer_type ctx.context) field_ptr "vfunc" ctx.builder in 
             fptr
 
-        | None -> 
-            let super = assert_super (get_class comp.classes cs) in
-            (* if its not in my vtable, ask the parent. an instance of the child is a valid instance of the parent *)
-            vtable_lookup ctx comp (make_cms super ms) obj 
+        | None ->  
+            assert false; (* should be doing lookup on base class so it should be the one declaring the method  *)
                     
 
 (*== Emiting llvm ir for a single method ==*)
@@ -803,10 +821,13 @@ let convert_method ctx code current_cms comp =
             let target_cms = make_cms base_class target_sign in
             Hashtbl.replace comp.virtually_called target_cms ();
 
-            let v_func_ptr = vtable_lookup ctx comp target_cms (List.hd compstack) in
+            let arg_count = List.length (ms_args target_sign) in
+            let objptr = List.nth compstack arg_count in
+
+            let v_func_ptr = vtable_lookup ctx comp target_cms objptr in
             call_method_inner false v_func_ptr target_sign compstack
     in
-    let make_new_uninit classname = 
+    let make_new_uninit classname = (* You must call constructor manually! *)
         let {ty; vtable; _} = find_class_lltype ctx comp classname in
         let obj = build_malloc ty "" ctx.builder in
         let vptr_field = fst (get_field_ptr ctx comp obj classname (vtable_field_sign)) in
@@ -814,10 +835,19 @@ let convert_method ctx code current_cms comp =
         obj
     in
     let emit_string_obj ctx comp s = 
+        (* TODO: always use the same object for a given string instead of reallocating every time the literal is evaluated. 
+           maybe global intern table and emit a call to like rt_get_string_const(index) 
+           then you have { values: [n] char*, objects: [n] objptr } 
+           if objects[i] == null then objects[i] = fill_str(new_uninit, values[i])
+           return objects[i] so its always a null check and a lookup but you only allocate once
+           and you can use the hashes to deduplicate the array at compiletime but runtime still only needs to offset the pointer. 
+           *)
+        (* TODO: do i need to deal with the modified utf8 thing? set the coder field or turn off compact strings (former pls) 
+           tho it being a static field that only gets set in clinit means llvm can't constant fold it. should be a special case because strings are kinda important *)
         let len = String.length s in
         let len = const_int (i32_type ctx.context) len in
         let data = const_stringz ctx.context s in
-        let data = define_global "tempstrconst" data ctx.the_module in
+        let data = define_global "str" data ctx.the_module in
         let str_cls = (make_cn "java.lang.String") in
         let obj = make_new_uninit str_cls in
 
@@ -830,10 +860,6 @@ let convert_method ctx code current_cms comp =
         let _ = build_store chars_array value_field_ptr ctx.builder in
 
         let _ = fst (call_intin (FillStr) [data; chars_array; ]) in
-
-
-        (* TODO: create an instance of the String class *)
-        (* todo "string constants" *)
         obj
     in
     let emit_const ctx comp (v: jconst): llvalue = 
@@ -843,22 +869,26 @@ let convert_method ctx code current_cms comp =
         | `Long n -> const_int (i64_type ctx.context) (Int64.to_int n)
         | `Float n -> const_float (float_type ctx.context) n
         | `Double n -> const_float (double_type ctx.context) n
-        | `String s -> emit_string_obj ctx comp (jstr_raw s) (* TODO: do i need to deal with the modified utf8 thing *)
-        | _ -> todo "emit_const other types"
+        | `String s -> emit_string_obj ctx comp (jstr_raw s)
+        | `Class c -> 
+            eprintf "warning emit const class %s\n" (JPrint.object_type c);
+            const_null (pointer_type ctx.context)
+        | `MethodType _m -> 
+            eprintf "warning emit const MethodType\n";
+            const_null (pointer_type ctx.context)
+        | `MethodHandle _m -> 
+            eprintf "warning emit const MethodHandle\n";
+            const_null (pointer_type ctx.context)
+        | `ANull -> 
+            const_null (pointer_type ctx.context)
     in
     
     let emit_op compstack op index prev_op = 
         if op != OpInvalid then total_seen := !total_seen + 1;
+        (* eprintf "[%d. %s] " index (JPrint.jopcode op); *)
 
         let end_block s = 
-            (if (List.is_empty s) then ()
-            else (
-                (match op with 
-                | OpGoto offset -> 
-                    assert (offset == 4 && List.length s == 1);
-                | _ -> illegal "jump non empty stack but not goto";
-                );
-                eprintf "ternary at op %d in %s\n" index (JPrint.class_method_signature current_cms); ()));
+            assert (List.length s <= 1);
             s
         in
 
@@ -925,7 +955,7 @@ let convert_method ctx code current_cms comp =
                 let stack = (match b with
                 | `Short -> do_cast build_intcast i16_type compstack
                 | `Byte -> do_cast build_intcast i8_type compstack
-                | `Char -> todo "what's a char?"
+                | `Char -> do_cast build_intcast i16_type compstack
                 | `Bool -> do_cast build_intcast i1_type compstack
                 | _ -> unreachable ()
                 ) in
@@ -1041,6 +1071,7 @@ let convert_method ctx code current_cms comp =
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
         | (OpRet _) | (OpJsr _ ) -> illegal ((JPrint.jopcode op) ^ " was deprecated in Java 7.")
+        | OpBreakpoint -> illegal "OpBreakpoint is reserved"
 
         | OpThrow -> 
             let _ = (call_intin (LogThrow) compstack) in
@@ -1052,15 +1083,11 @@ let convert_method ctx code current_cms comp =
 
     let block_ranges = sliding_pairs ((List.sort compare block_positions) @ [Array.length code.c_code]) in
 
-
     let emit_block stack (start, stop) dophi = 
-        eprintf "\nemit %d to %d\n" start stop;
-
         let bb = Hashtbl.find basic_blocks start in (* entering a new block *)
 
         let current = insertion_block ctx.builder in
 
-        (* let _ = really_end_block compstack in *)
         (match block_terminator current with 
         | Some _ -> () (* last instruction was a jump *)
         | None -> 
@@ -1071,28 +1098,33 @@ let convert_method ctx code current_cms comp =
 
         let stack = (match dophi with
         | None -> stack
-        | Some (a_v, a_b, b_v, b_b) -> 
+        | Some (a_v, a_b, b_v, b_b) -> (* last two blocks were part of a ternary operator s*)
             let inputs = [(a_v, a_b); (b_v, b_b); ] in
             let value_c = build_phi inputs "" ctx.builder in
             value_c :: stack) in
 
         let rec loop stack index prev_op = 
             let op = Array.get code.c_code index in
-            eprintf "[%d. %s] " index (JPrint.jopcode op);
             let new_stack = emit_op stack op index prev_op in
             if index < stop - 1 then loop new_stack (index + 1) (Some op) else new_stack
         in
 
         let s = loop stack start None in 
 
+
+        (match dophi with
+        | None -> ()
+        | Some _ -> 
+            assert (List.length s == 0));
+
         assert (List.length s <= 1);
         if List.is_empty s then Normal else DidPhi (List.hd s, bb)
     in 
 
-    eprintf "\nemitting %s %d ops\n" (JPrint.class_method_signature current_cms) (Array.length code.c_code);
-
     (* TODO: check that phi blocks are of the normal form *)
     let _ = (List.fold_left (fun (prev_state, dophi) block -> 
+        (* Note: always starts with an empty stack. if this is a phi reciever, 
+           it creates the value based on `dophi` as its first instruction *)
         let next_state = emit_block [] block dophi in 
         (match prev_state with 
         | Normal -> next_state, None
@@ -1104,15 +1136,22 @@ let convert_method ctx code current_cms comp =
         ) (Normal, None) block_ranges) in
     ()
 
-    
-
 (*== Walking classes to find code ==*)
 
 let emit_method ctx comp m = 
-    match m with
-    | AbstractMethod func -> todo ("emit_method AbstractMethod " ^ JPrint.class_method_signature func.am_class_method_signature)
+    let sign = (match m with
+    | AbstractMethod func -> (* has a vtable slot but cannot be called directly *)
+        let sign = func.am_class_method_signature in
+        eprintf "Abstract Trap %s\n" (JPrint.class_method_signature sign);
+        assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
+        let func = find_func ctx comp sign in
+        let entry = append_block ctx.context "entry_trap_abstract" func in 
+        position_at_end entry ctx.builder;
+        let _ = build_unreachable ctx.builder in
+        sign
     | ConcreteMethod func ->
         let sign = func.cm_class_method_signature in
+        (* eprintf "\n=== emit method %s ===\n" (JPrint.class_method_signature sign); *)
         assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
         (match func.cm_implementation with
             | Native -> ()
@@ -1120,11 +1159,13 @@ let emit_method ctx comp m =
                 let jcode = Lazy.force code in
                 convert_method ctx jcode sign comp
         );
-        
-        let ll = Hashtbl.find comp.func_queue sign in
-        Hashtbl.remove comp.func_queue sign;
-        Hashtbl.replace comp.funcs_done sign ll;
-        ()
+        sign) 
+    in
+    
+    let ll = Hashtbl.find comp.func_queue sign in
+    Hashtbl.remove comp.func_queue sign;
+    Hashtbl.replace comp.funcs_done sign ll;
+    ()
 
 
 let () = 

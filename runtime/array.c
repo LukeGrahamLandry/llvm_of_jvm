@@ -107,11 +107,23 @@ void log_throw(objptr throwable) {
     exit(1);
 }
 
+// TODO: fragile because if you dont seem to call a native method it emits an empty body for you so cant define 
 // TODO: do this properly 
 char* java_lang_Throwable_fillInStackTrace1(char* obj, i32 dummy) {
     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
     return obj;
 }
+// TODO: i highly distrust my name mangling
+char* java_lang_Throwable_fillInStackTrace2(char* obj, i32 dummy) {
+    printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
+    return obj;
+}
+
+void java_lang_Object_registerNatives(){
+
+}
+
+
 
 #undef generic_array
 #undef OBJ_TYPE_ID
