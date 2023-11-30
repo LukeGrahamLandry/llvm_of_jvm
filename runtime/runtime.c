@@ -16,7 +16,6 @@ struct InterfaceNode {
     Vtable* root_interface_vptr;
 };
 
-
 int check_instanceof(Vtable* current_vptr, Vtable* target_vptr) {
     printf("vptr%p instanceof vptr%p\n", current_vptr, target_vptr);
     if (current_vptr == target_vptr) return 1;

@@ -427,6 +427,7 @@ type vtableinfo = {
     ty: lltype;
     value_ptr: llvalue;
     fields: (method_signature, structfield) Hashtbl.t;
+    value_direct: llvalue;
 }
 
 type structinfo = {
@@ -445,6 +446,7 @@ type compilation = {
     structs: (class_name, structinfo) Hashtbl.t;
     virtually_called: (class_method_signature, unit) Hashtbl.t;
     overload_count: (string, int) Hashtbl.t;
+    wip_vtable_memo: (class_name, vtableinfo) Hashtbl.t;
 }
 
 let get_super childcls = 
@@ -581,9 +583,10 @@ let find_base_declaration comp cn ms =
    The class that declares the method lowest in the chain. *)
 let rec resolve_override comp cn ms = 
     let cls = get_class comp.classes cn in
-    if defines_method cls ms then cn else 
-    let super = assert_super cls in
-    resolve_override comp super ms
+    if defines_method cls ms then Some cn else 
+    match get_super cls with
+    | Some super -> resolve_override comp super ms
+    | None -> None
 
 (* returns [ childname; ...; java.lang.Object; ] *)
 let rec inheritance_chain comp childname = 
@@ -592,18 +595,77 @@ let rec inheritance_chain comp childname =
     | Some super -> childname :: inheritance_chain comp super
     | None -> [childname]
 
-let rec find_vtable ctx comp class_name: vtableinfo = 
+let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls aren't memoiszed so interfaces don't work *)
     match Hashtbl.find_opt comp.structs class_name with
     | Some { vtable; _ } -> vtable
+    | None -> (* haven't seen yet *)
+    match Hashtbl.find_opt comp.wip_vtable_memo class_name with
+    | Some vtable -> vtable
     | None -> (* haven't seen yet *)
 
     
     let cls = get_class comp.classes class_name in
-    
     let ptr_ty = pointer_type ctx.context in
+    let name = replace_chars (cn_name class_name) ".$" '_' in
+
+    let interfaceinfo_ty = named_struct_type ctx.context "InterfaceInfo" in
+    struct_set_body interfaceinfo_ty (Array.of_list [ptr_ty; ptr_ty; ptr_ty;]) false;
+    
     let interface_list_ptr = match cls with
     | JInterface _ -> const_null ptr_ty
-    | JClass _ -> const_null ptr_ty 
+    | JClass classinfo -> 
+        (* for every interface i implement, need to get function pointers for all its methods. *)
+        let emit_interface_impl_vtable (prev, interfaces) interface_cn = 
+            assert (not ((get_super cls) == None)); (* Object implements no interfaces *)
+
+            let _interface_cls = match get_class comp.classes interface_cn with 
+            | JInterface c -> c | JClass _ -> assert false
+            in
+
+            let prev_vptr = Option.default (const_null ptr_ty) prev in
+
+            let interface_vtable = find_vtable ctx comp interface_cn in
+
+            (* TODO: resolve each function in the interface against my concrete class. *)
+            (* let method_signs = MethodMap.filter (fun m -> not (is_static_method m)) interface_cls.i_methods in *)
+            
+            let lang_object_vtable = find_vtable ctx comp (make_cn "java.lang.Object") in
+
+            let vstruct_values = Hashtbl.fold (fun sign value prev -> 
+                eprintf "vstruct_values %s IN %s\n" (JPrint.class_method_signature (make_cms interface_cn sign)) (JPrint.class_name class_name);
+                (* TODO: defaults methods might not show up in the normal class hiarchy *)
+
+                let func = match resolve_override comp class_name sign with 
+                | Some target_class -> find_func_inner false ctx comp (make_cms target_class sign)
+                | None -> 
+                    eprintf "TODO: default method %s\n" (JPrint.class_method_signature (make_cms interface_cn sign));
+                    const_null ptr_ty 
+                in
+                
+                (value.index, func) :: prev
+                ) interface_vtable.fields [(0, lang_object_vtable.value_direct)] 
+            in
+
+            
+            (* TODO: should really have a consistant way of emitting in the right order instead of these one-liner sorts *)
+            let vstruct_values = List.map snd (List.sort (fun (a, _) (b, _) -> compare a b) vstruct_values) in 
+
+
+            let vtable_value = const_named_struct interface_vtable.ty (Array.of_list vstruct_values) in
+            let vtable_value_ptr = define_global ("vtable_" ^ name ^ "_impl_" ^ (cn_name interface_cn)) vtable_value ctx.the_module in
+
+            let node_value = const_named_struct interfaceinfo_ty (Array.of_list [prev_vptr; vtable_value_ptr; interface_vtable.value_ptr]) in
+
+            let vptr = define_global ("node_" ^ name ^ "_impl_" ^ (cn_name interface_cn)) node_value ctx.the_module in
+
+            (Some vptr, interfaces)
+        in
+
+        let (last, _) = List.fold_left emit_interface_impl_vtable (None, []) classinfo.c_interfaces in
+
+        match last with
+        | None -> const_null ptr_ty
+        | Some p -> p
     in
 
     (* no super class (java.lang.Object), has a slot for the vptr of the parent class. used for instanceof checks *)
@@ -621,7 +683,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     let fill_vtable nextclass prev_val =
         let next_vtable = find_vtable ctx comp nextclass in
         let vtable_values = Hashtbl.fold (fun ms field prevfields ->
-            let firstclass = resolve_override comp class_name ms in
+            let firstclass = Option.get (resolve_override comp class_name ms) in
             let func = find_func_inner false ctx comp (make_cms firstclass ms) in
             (field.index, func) :: prevfields
         ) next_vtable.fields [] in 
@@ -660,7 +722,6 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     let vstruct_field_types = super_table_ty :: vstruct_field_types in
     let vstruct_values = inherited_vtable_value :: vstruct_values in
 
-    let name = replace_chars (cn_name class_name) ".$" '_' in
     let vtable_ty = named_struct_type ctx.context ("VTable_" ^ name) in
     struct_set_body vtable_ty (Array.of_list vstruct_field_types) false;
 
@@ -668,7 +729,9 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     let vtable_value_ptr = define_global ("vtable_" ^ name) vtable_value ctx.the_module in
 
     let fields = Hashtbl.of_seq (List.to_seq fields) in 
-    { ty=vtable_ty; value_ptr=vtable_value_ptr; fields; }
+    let vtable = { ty=vtable_ty; value_ptr=vtable_value_ptr; fields; value_direct=vtable_value} in
+    Hashtbl.replace comp.wip_vtable_memo class_name vtable;
+    vtable
 
 
 let rec find_class_lltype ctx comp class_name = 
@@ -852,7 +915,7 @@ let convert_method ctx code current_cms comp =
     in
     let call_maybe_virtual classname target_sign compstack = 
         let obj_cls = get_class comp.classes classname in
-        let overriding_class = resolve_override comp classname target_sign in
+        let overriding_class = Option.get (resolve_override comp classname target_sign) in
         let m = get_method (get_class comp.classes overriding_class) target_sign in
 
         if is_final_method m || is_final obj_cls then (* nobody can override OR nobody past us can override *)
@@ -927,7 +990,7 @@ let convert_method ctx code current_cms comp =
     
     let emit_op compstack op index prev_op = 
         if op != OpInvalid then total_seen := !total_seen + 1;
-        eprintf "[%d. %s] " index (JPrint.jopcode op);
+        (* eprintf "[%d. %s] " index (JPrint.jopcode op); *)
 
         let end_block s = 
             assert (List.length s <= 1);
@@ -1156,7 +1219,7 @@ let convert_method ctx code current_cms comp =
     let block_ranges = sliding_pairs ((List.sort compare block_positions) @ [Array.length code.c_code]) in
 
     let emit_block stack (start, stop) dophi = 
-        eprintf "\nemit block %d -> %d\n" start stop;
+        (* eprintf "\nemit block %d -> %d\n" start stop; *)
         let bb = Hashtbl.find basic_blocks start in (* entering a new block *)
 
         let current = insertion_block ctx.builder in
@@ -1231,7 +1294,7 @@ let emit_method ctx comp m =
         sign
     | ConcreteMethod func ->
         let sign = func.cm_class_method_signature in
-        eprintf "\n=== emit method %s ===\n" (JPrint.class_method_signature sign);
+        (* eprintf "\n=== emit method %s ===\n" (JPrint.class_method_signature sign); *)
         assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
         (match func.cm_implementation with
             | Native -> ()
@@ -1267,6 +1330,7 @@ let () =
         structs = Hashtbl.create 0; 
         virtually_called = Hashtbl.create 0; 
         overload_count = Hashtbl.create 0; 
+        wip_vtable_memo = Hashtbl.create 0;
     } in
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)
