@@ -1,4 +1,25 @@
-## 
+## todo: cleanup 
+
+- redo stack_comptime_safe check 
+- cleanup emitting blocks & phi nodes, statemachine is a bit weird 
+
+## todo: real jdk tests
+
+https://github.com/openjdk/jdk/tree/master/test/jdk/java
+
+the ones in `lang` at least seem orgnaised into little programs with a main method which is very helpful. 
+
+- init exceptions (dont need to catch)
+- instanceof
+- standalone program from main(String...) 
+
+## instanceof (Nov 30)
+
+similar to fcmp, it produces a value but you tend to always jump on it right after so seems convient to do a similar optimisation to avoid an extra branch. not because i think llvm wouldn't fix it but because adding basic blocks in my current system seems a bit annoying. will need to revisit because im sure you're allowed to actually use the value. 
+
+actually never mind easiest starting way to do inheritance i think is have root vtable have a super vptr slot so you can use it like a linked list and see if you hit the one you're looking for. so ill make it an intrinsic function. 
+
+## abstract methods (Nov 29)
 
 need to emit `<clinit>` for static blocks even if never referenced (since it will never be) but alas now its actually trying to set all the random fields on Throwable which uses new constant types. For now try just doing them as null pointers. Then it tries to call abstractcollection.size which i can't do yet. Leave that test for now, need to do abstract methods soon anyway. 
 
@@ -7,9 +28,9 @@ out/test.ll:1416:41: error: base of getelementptr must be a pointer
   %vptr65 = load ptr, ptr addrspace(32) getelementptr inbounds (%TestObjs_A, i32 5, i32 0, i32 0), align 8
 
 if you just use the obj ptr as the vtable field ptr it tries to read.... the number 5.... more accuritely it tries to read the argument im trying to pass to the function. i thought i was just confused trying to read the gep ir but yeah it was just doing something dumb. god dman it. abstract methods were in fact trivial i wasnt crazy just dumb. i guess i never tried to call a virtual method with an argument befoer and i was looking at the stack backwards as i often do. i remember writing a comment next to that to check if i had the order right and then deleting it cause hey it works probably fine. thats deeply frustraiting, should really not do this while tired. 
-just to reasure myself im not out of a job, chatgpt doesnt catch that until i point out the problem to it `https://chat.openai.com/c/66fd04bf-3069-4cc5-858e-eb79fce50b86`, still kinda impressive tho. 
+just to reasure myself im not out of a job, chatgpt doesnt catch that until i point out the problem to it `https://chat.openai.com/share/b59bd1af-ff19-4100-843a-64a41e354cc5`, still kinda impressive tho. 
 
-# ternary operator (Nov 29)
+## ternary operator (Nov 29)
 
 seems to always have the form 
 

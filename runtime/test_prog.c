@@ -102,7 +102,12 @@ void optestjava() {
     assert(OpTest_nested_arr(2) == (2*3*4*5));
     assert(OpTest_useimported(49) == 50);
     TestObjs__clinit_();
-    assert(OpTest_objtest() == 0);
+
+    int t = OpTest_objtest();
+    if (t) {
+        printf("OpTest_objtest() = %d\n", t);
+        assert(0);
+    }
     printf("Tests passed!\n");
 }
 

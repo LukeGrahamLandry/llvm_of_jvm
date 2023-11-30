@@ -201,7 +201,7 @@ let rec op_stack_delta op =
     | (OpNeg _) | (OpIInc _) 
     | OpGoto _
     | OpInvalid
-    | (OpNewArray _) | OpArrayLength | (OpGetField _)
+    | (OpNewArray _) | OpArrayLength | (OpGetField _) | (OpInstanceOf _)
     -> 0
 
     | OpThrow -> -1
@@ -379,6 +379,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | ArrFillMulti of jvm_array_type
 | FillStr
 | LogThrow
+| InstCheck
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -393,6 +394,7 @@ let intrinsic_signature ctx op =
         | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
         | FillStr -> "fill_string_const", [arr_t; arr_t], void_type ctx.context
         | LogThrow -> "log_throw", [arr_t], void_type ctx.context
+        | InstCheck -> "check_instanceof", [arr_t; arr_t], i1_type ctx.context
     in
     (name, args, ret)
 
@@ -586,6 +588,15 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     | Some { vtable; _ } -> vtable
     | None -> (* haven't seen yet *)
 
+
+    (* no super class (java.lang.Object), has a slot for the vptr of the parent class. used for instanceof checks *)
+    let root_vtable_ty = struct_type ctx.context (Array.of_list [pointer_type ctx.context]) in
+    let parent_vptr = match get_super (get_class comp.classes class_name) with
+    | Some cls -> (find_vtable ctx comp cls).value_ptr
+    | None -> const_null (pointer_type ctx.context) 
+    in
+    let root_vtable_value = const_struct ctx.context (Array.of_list [parent_vptr]) in
+
     (* For each class in the chain, starting at the top, look at each base method declaration
     but resolve it against my class and make a new vtable value with that function pointer instead of the original. 
     At each level, the layout of my vtable matches so it can be read by a caller who just knows the base class. *)
@@ -603,8 +614,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
         let vtable_values = prev_val :: vtable_values in
         const_named_struct next_vtable.ty (Array.of_list vtable_values)
     in
-    let empty_value = const_struct ctx.context (Array.of_list []) in
-    let inherited_vtable_value = List.fold_right fill_vtable my_inheritance empty_value in
+    let inherited_vtable_value = List.fold_right fill_vtable my_inheritance root_vtable_value in
 
     let cls = get_class comp.classes class_name in
 
@@ -628,7 +638,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     (* The first field in my vtable is my parents whole vtable. If no super class (java.lang.Object), use an empty struct *)
     let super_table_ty = match get_super cls with
     | Some super -> (find_vtable ctx comp super).ty
-    | None -> struct_type ctx.context (Array.of_list []) (* TODO: put a pointer to name string here for excpetions? *)
+    | None -> root_vtable_ty
     in
 
     (* Note: the inherited_vtable_value takes a slot but you can never refer to it directly. *)
@@ -1027,6 +1037,19 @@ let convert_method ctx code current_cms comp =
             | (OpIf _) -> compstack 
             | _ -> illegal "OpCmp must be followed by OpIf")
 
+        | OpInstanceOf target_class_ty ->
+            let target_class = (match target_class_ty with
+                | TArray _ -> todo "instanceof array"
+                | TClass c -> c
+            ) in
+            let target_vptr = (find_vtable ctx comp target_class).value_ptr in
+
+            let vptr_field_ptr = List.hd compstack in  (* TODO: this relies on vtable being first field *)
+            let current_vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
+
+            let (result, _) = call_intin InstCheck [target_vptr; current_vptr] in
+            result :: drop_fst compstack
+
         | OpGetStatic (classname, field_sign) ->
             let cfs = make_cfs classname field_sign in
             let global = find_global ctx comp cfs in
@@ -1106,7 +1129,10 @@ let convert_method ctx code current_cms comp =
         let rec loop stack index prev_op = 
             let op = Array.get code.c_code index in
             let new_stack = emit_op stack op index prev_op in
-            if index < stop - 1 then loop new_stack (index + 1) (Some op) else new_stack
+            let last_good_op = (match op with
+            | OpInvalid -> prev_op
+            | other -> Some other) in
+            if index < stop - 1 then loop new_stack (index + 1) last_good_op else new_stack
         in
 
         let s = loop stack start None in 
@@ -1212,7 +1238,6 @@ let () =
     emit_next ();
     assert (Hashtbl.length comp.func_queue == 0);
     
-
     let rec emit_trap_func () = 
         match take_any comp.funcs_vtabled with
         | None -> ()

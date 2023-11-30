@@ -60,7 +60,11 @@ public class TestObjs {
         if (new B().overrideonly() != 50) return 22;
         if (new B().overrideonlywitharg(10) != 100) return 23;
 
-        // Need string builder abstract method for concat in error message in outofboundexception
+
+        if (temp() != 0) return 24;
+
+
+        // need instanceof RandomAccess (maybe for throwable like assertzero)
         // var v = "hi".charAt(0);
 
         // doesn't work either
@@ -69,7 +73,6 @@ public class TestObjs {
         
         return 0;
     }
-
 
     public static abstract class A {
         abstract int overrideonly();
@@ -92,14 +95,13 @@ public class TestObjs {
         float nocallb() {
             return 1.0f;
         }
-
     }
 
     static int globalinnonentry = 15;
 
     static void assertzero(int a) {
         // TODO: fix Throwable clinit
-        // NOT YET IMPLEMENTED: forward_declare_method AbstractMethod int java.util.AbstractCollection.size()
+        // "NOT YET IMPLEMENTED: stack_delta instanceof java.util.RandomAccess"
         // if (a != 0) throw new RuntimeException();
     }
 
@@ -187,6 +189,24 @@ public class TestObjs {
         int overrideinfinalchild() {
             return this.field + 10;
         }
+    }
+
+    static class C extends B {
+    
+    }
+
+    static int temp() {
+        if (!(new B() instanceof B)) return 24;
+        if (!(new B() instanceof A)) return 25;
+        if (!(new C() instanceof A)) return 26;
+
+        A c = new C();
+        A b = new B();
+        if (!(c instanceof B)) return 26;
+        if (b instanceof C) return 27;
+        if (!(c instanceof B)) return 28;
+        if (!(c instanceof Object)) return 29;
+        return 0;
     }
 
     // Not referenced and this class isn't a root so won't even try to compile these. 
