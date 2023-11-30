@@ -195,6 +195,7 @@ let rec op_stack_delta op =
     | OpIAnd | OpLAnd | OpIOr | OpLOr | OpIXor | OpLXor | OpIUShr | OpLUShr | OpIShr | OpLShr | OpIShl | OpLShl
     | (OpArrayLoad _) | OpPop
     | OpIf _ (* comparing to zero *)
+    | OpMonitorEnter | OpMonitorExit
     -> -1
 
     | OpI2L | OpI2F | OpI2D | OpL2I | OpL2F | OpL2D | OpF2I | OpF2L | OpF2D | OpD2I | OpD2L | OpD2F | OpI2B | OpI2C | OpI2S 
@@ -228,7 +229,7 @@ let rec op_stack_delta op =
 
 (* Find the indexes of opcodes that begin basic blocks. So which instructions are jump targets. 
    The list will have no duplicates. HACK: Jumps to an OpCmp are treated as a jump to the following OpIf instead. *)
-let find_basic_blocks (code: jopcode array): int list =
+let find_basic_blocks (code: jopcode array) exceptions: int list =
     let rec add_target l i = (* TODO: should sort here instead of later *)
         if List.exists ((=) i) l then l else 
             let target_fcmp = match Array.get code i with | (OpCmp _) -> true | _ -> false in
@@ -249,7 +250,12 @@ let find_basic_blocks (code: jopcode array): int list =
             | _ -> blocks in
         if index < Array.length code - 1 then iter_block blocks (index + 1) else blocks
     in
-    iter_block [0] 0
+
+    let e_blocks = List.fold_left (fun prev e -> 
+        add_target prev e.e_handler
+        ) [] exceptions in
+    
+    iter_block (0 :: e_blocks) 0
 
 type blockmap = (int, llbasicblock) Hashtbl.t
 
@@ -618,7 +624,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
 
     let cls = get_class comp.classes class_name in
 
-    let needs_vtable_entry m = (* TODO: can you override and add final? *)
+    let needs_vtable_entry m =
         not (is_final_method m) && not (is_static_method m) && (cn_equal class_name (find_base_declaration comp class_name (get_method_signature m))) 
     in
     
@@ -776,7 +782,7 @@ let convert_method ctx code current_cms comp =
     let func = find_func ctx comp current_cms in 
     let ret_ty = ms_rtype current_sign in
 
-    let block_positions = find_basic_blocks code.c_code in
+    let block_positions = find_basic_blocks code.c_code code.c_exc_tbl in
     if not (stack_comptime_safe block_positions code.c_code)
         then todo ("use rt stack. not stack_comptime_safe in " ^ (ms_name current_sign) ^ " [often we dont like (a ? b : c)]");
 
@@ -895,7 +901,7 @@ let convert_method ctx code current_cms comp =
     
     let emit_op compstack op index prev_op = 
         if op != OpInvalid then total_seen := !total_seen + 1;
-        (* eprintf "[%d. %s] " index (JPrint.jopcode op); *)
+        eprintf "[%d. %s] " index (JPrint.jopcode op);
 
         let end_block s = 
             assert (List.length s <= 1);
@@ -1090,6 +1096,11 @@ let convert_method ctx code current_cms comp =
             (List.hd working) :: rest_stack
         | OpDup -> List.hd compstack :: compstack
         | OpPop -> drop_fst compstack
+
+
+        | OpMonitorEnter | OpMonitorExit -> 
+            (* eprintf "Warning: ignoring syncronised block in %s\n"  (JPrint.class_method_signature current_cms); *)
+            drop_fst compstack
         
         | OpInvalid (* these slots are the arguments to previous instruction *)
         | OpNop -> compstack 
@@ -1107,6 +1118,7 @@ let convert_method ctx code current_cms comp =
     let block_ranges = sliding_pairs ((List.sort compare block_positions) @ [Array.length code.c_code]) in
 
     let emit_block stack (start, stop) dophi = 
+        eprintf "\nemit block %d -> %d\n" start stop;
         let bb = Hashtbl.find basic_blocks start in (* entering a new block *)
 
         let current = insertion_block ctx.builder in
@@ -1151,7 +1163,11 @@ let convert_method ctx code current_cms comp =
     let _ = (List.fold_left (fun (prev_state, dophi) block -> 
         (* Note: always starts with an empty stack. if this is a phi reciever, 
            it creates the value based on `dophi` as its first instruction *)
-        let next_state = emit_block [] block dophi in 
+        let notCatchBlock = (List.find_opt (fun e -> e.e_handler = (fst block)) code.c_exc_tbl) == None in
+
+        let stack = if notCatchBlock then [] else [const_null (pointer_type ctx.context)] in
+
+        let next_state = emit_block stack block dophi in 
         (match prev_state with 
         | Normal -> next_state, None
         | DidPhi (a_v, a_b) -> 
@@ -1177,7 +1193,7 @@ let emit_method ctx comp m =
         sign
     | ConcreteMethod func ->
         let sign = func.cm_class_method_signature in
-        (* eprintf "\n=== emit method %s ===\n" (JPrint.class_method_signature sign); *)
+        eprintf "\n=== emit method %s ===\n" (JPrint.class_method_signature sign);
         assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
         (match func.cm_implementation with
             | Native -> ()

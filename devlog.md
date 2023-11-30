@@ -2,6 +2,8 @@
 
 - redo stack_comptime_safe check 
 - cleanup emitting blocks & phi nodes, statemachine is a bit weird 
+- handle exception catch blocks properly 
+- do a lock instead of no-op for monitors
 
 ## todo: real jdk tests
 
@@ -12,6 +14,44 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 - init exceptions (dont need to catch)
 - instanceof
 - standalone program from main(String...) 
+
+## interfaces 
+
+next in the quest to compile String.charAt, is handling `instanceof java.util.RandomAccess` in `java.util.List java.util.Collections.unmodifiableList(java.util.List)`
+
+so i need to decide how i want to represent interfaces. the best seems like using a wide pointer like rust trait objects. but its awquard because you need it to be an instance of object. there is a special invokeinterface opcode so at least you always know when you're trying to call one. i guess make a new __Interface class or whatever that has a v-pointer and a data-pointer. 
+
+## no-op monitor (Nov 30)
+
+```
+static void use_syncronized_block();
+    Code:
+       0: new           #2                  // class java/lang/Object
+       3: dup
+       4: invokespecial #1                  // Method java/lang/Object."<init>":()V
+       7: dup
+       8: astore_0
+       9: monitorenter
+      10: aload_0
+      11: monitorexit
+      12: goto          20
+      15: astore_1
+      16: aload_0
+      17: monitorexit
+      18: aload_1
+      19: athrow
+      20: return
+    Exception table:
+       from    to  target type
+          10    12    15   any
+          15    18    15   any
+```
+
+something in the depths of throwable wants to have a syncronised block (java.lang.Class.desiredAssertionStatus()). 
+I want to just ignore the locking and treat it as normal code for now.. but it does weird things with the exception table for how to handle if you fail to take the lock which confuses my basic block finding. Even adding those as jump targets so it splits the blocks correctly, the handler tries to use things from the stack. The exception handler expects to have the exception object on the stack. Ok so again, temporary soulition, when emitting a block, if the start index is a handler in the exception table, push a null pointer to the initial stack. That represents the thrown exception and should be a valid object but for now since I just termninate the program on real exceptions and don't even check the lock in this case, it will never actually try to dereference the pointer. 
+
+so now i can compile the sync blocks (assuming its single threaded so you never fail to take the lock) and maybe even very close to at least compiling a catch block. 
+
 
 ## instanceof (Nov 30)
 

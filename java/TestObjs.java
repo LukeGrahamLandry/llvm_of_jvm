@@ -1,3 +1,7 @@
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 public class TestObjs {
     int field;
     TestObjs hello_me_again;
@@ -62,7 +66,10 @@ public class TestObjs {
 
 
         if (temp() != 0) return 24;
+        sync();
 
+        var al = new ArrayList();
+        // var ul = Collections.unmodifiableList(al);
 
         // need instanceof RandomAccess (maybe for throwable like assertzero)
         // var v = "hi".charAt(0);
@@ -72,6 +79,12 @@ public class TestObjs {
         // var vv = "hi".getBytes();
         
         return 0;
+    }
+
+    static void sync() {
+        synchronized(new Object()) {  // TODO: this is just a no-op for now
+            
+        }
     }
 
     public static abstract class A {
