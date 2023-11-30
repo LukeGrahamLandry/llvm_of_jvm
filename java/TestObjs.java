@@ -69,6 +69,19 @@ public class TestObjs {
         sync();
 
         var al = new ArrayList();
+
+        if (new Four().getNum() != 4) return 25;
+        if (new Five().getNum() != 5) return 26;
+
+        if (!(new Four() instanceof Four)) return 27;
+
+        GetNum n = new Four();
+        int v = n.getNum();
+        if (v != 4) return v;
+        
+        // n = new Five();
+        // if (n.getNum() != 5) return 28;
+
         // var ul = Collections.unmodifiableList(al);
 
         // need instanceof RandomAccess (maybe for throwable like assertzero)
@@ -79,6 +92,27 @@ public class TestObjs {
         // var vv = "hi".getBytes();
         
         return 0;
+    }
+
+    static interface GetNum {
+        int getNum();
+    }
+
+    static class Four implements GetNum {
+        public int getNum() {
+            return 4;
+        }
+    }
+
+    static class Five implements GetNum {
+        // Just take up a slot in the vtable so its less likely to successfully cheat the interface call
+        public int garbage() {
+            return 123;
+        }
+
+        public int getNum() {
+            return 5;
+        }
     }
 
     static void sync() {

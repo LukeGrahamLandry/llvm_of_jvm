@@ -218,7 +218,8 @@ let rec op_stack_delta op =
         -1 + op_stack_delta (OpInvoke ((`Static ty), sign))
     | OpAMultiNewArray (_, dim) -> 1 - dim
 
-    | OpInvoke ((`Virtual _), sign) ->
+    | OpInvoke ((`Virtual _), sign)
+    | OpInvoke ((`Interface _), sign) ->
         let ret = if (ms_rtype sign) == None then 0 else 1 in
         -1 + ret - List.length (ms_args sign)
 
@@ -386,6 +387,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | FillStr
 | LogThrow
 | InstCheck
+| FindInterface
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -401,6 +403,7 @@ let intrinsic_signature ctx op =
         | FillStr -> "fill_string_const", [arr_t; arr_t], void_type ctx.context
         | LogThrow -> "log_throw", [arr_t], void_type ctx.context
         | InstCheck -> "check_instanceof", [arr_t; arr_t], i1_type ctx.context
+        | FindInterface -> "resolve_interface_vtable", [arr_t; arr_t], arr_t
     in
     (name, args, ret)
 
@@ -446,7 +449,7 @@ type compilation = {
 
 let get_super childcls = 
     match childcls with
-    | JInterface _ -> todo "interface get_super"
+    | JInterface _ -> Some (make_cn "java.lang.Object")
     | JClass cls -> (match cls.c_super_class with
         | Some super -> Some super
         | None -> 
@@ -594,14 +597,22 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     | Some { vtable; _ } -> vtable
     | None -> (* haven't seen yet *)
 
+    
+    let cls = get_class comp.classes class_name in
+    
+    let ptr_ty = pointer_type ctx.context in
+    let interface_list_ptr = match cls with
+    | JInterface _ -> const_null ptr_ty
+    | JClass _ -> const_null ptr_ty 
+    in
 
     (* no super class (java.lang.Object), has a slot for the vptr of the parent class. used for instanceof checks *)
-    let root_vtable_ty = struct_type ctx.context (Array.of_list [pointer_type ctx.context]) in
+    let root_vtable_ty = struct_type ctx.context (Array.of_list [ptr_ty; ptr_ty;]) in
     let parent_vptr = match get_super (get_class comp.classes class_name) with
     | Some cls -> (find_vtable ctx comp cls).value_ptr
-    | None -> const_null (pointer_type ctx.context) 
+    | None -> const_null ptr_ty
     in
-    let root_vtable_value = const_struct ctx.context (Array.of_list [parent_vptr]) in
+    let root_vtable_value = const_struct ctx.context (Array.of_list [parent_vptr; interface_list_ptr]) in
 
     (* For each class in the chain, starting at the top, look at each base method declaration
     but resolve it against my class and make a new vtable value with that function pointer instead of the original. 
@@ -621,8 +632,6 @@ let rec find_vtable ctx comp class_name: vtableinfo =
         const_named_struct next_vtable.ty (Array.of_list vtable_values)
     in
     let inherited_vtable_value = List.fold_right fill_vtable my_inheritance root_vtable_value in
-
-    let cls = get_class comp.classes class_name in
 
     let needs_vtable_entry m =
         not (is_final_method m) && not (is_static_method m) && (cn_equal class_name (find_base_declaration comp class_name (get_method_signature m))) 
@@ -725,6 +734,23 @@ let rec get_field_ptr ctx comp obj classname sign =
         let debug_field_name = fs_name sign in
         let ptr = build_struct_gep obj_ty obj field.index debug_field_name ctx.builder in
         (ptr, field.ty)
+
+
+(* TODO: copy paste. vtable_lookup should call this. *)
+let vfunc_lookup ctx comp (sign: class_method_signature) vptr: llvalue = 
+    let (cs, ms) = cms_split sign in
+    let vtable = find_vtable ctx comp cs in
+
+    match Hashtbl.find_opt vtable.fields ms with
+        | Some { index=field_index; _ } ->
+            let field_ptr = build_struct_gep vtable.ty vptr field_index (ms_name ms) ctx.builder in
+            let fptr = build_load (pointer_type ctx.context) field_ptr "vfunc" ctx.builder in 
+            fptr
+
+        | None ->  
+            assert false (* should be doing lookup on base class so it should be the one declaring the method  *)
+            
+            
 
 (* returns the function pointer to call *)
 let vtable_lookup ctx comp (sign: class_method_signature) obj: llvalue = 
@@ -1021,6 +1047,18 @@ let convert_method ctx code current_cms comp =
             in
             call_maybe_virtual classname target_sign compstack
         
+        | OpInvoke ((`Interface interface_cn), target_sign) -> 
+            let arg_count = List.length (ms_args target_sign) in
+            let obj_data_ptr = List.nth compstack arg_count in
+
+            let root_interface_vptr = (find_class_lltype ctx comp interface_cn).vtable.value_ptr in (* this points to a table of the abstract methods *)
+            let obj_vptr_field_ptr = obj_data_ptr in  (* TODO: this relies on vtable being first field *)
+            let obj_vptr = build_load (pointer_type ctx.context) obj_vptr_field_ptr "vptr" ctx.builder in
+            let (obj_interface_vptr, _) = call_intin FindInterface [root_interface_vptr; obj_vptr] in
+
+            let v_func_ptr = vfunc_lookup ctx comp (make_cms interface_cn target_sign) obj_interface_vptr in
+            call_method_inner false v_func_ptr target_sign compstack
+
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
             make_new_uninit classname :: compstack
         

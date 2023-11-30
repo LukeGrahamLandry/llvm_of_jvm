@@ -19,7 +19,17 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 
 next in the quest to compile String.charAt, is handling `instanceof java.util.RandomAccess` in `java.util.List java.util.Collections.unmodifiableList(java.util.List)`
 
-so i need to decide how i want to represent interfaces. the best seems like using a wide pointer like rust trait objects. but its awquard because you need it to be an instance of object. there is a special invokeinterface opcode so at least you always know when you're trying to call one. i guess make a new __Interface class or whatever that has a v-pointer and a data-pointer. 
+so i need to decide how i want to represent interfaces. the best seems like using a wide pointer like rust trait objects. but its awquard because you need it to be an instance of object. there is a special invokeinterface opcode so at least you always know when you're trying to call one. i guess make a new __Interface class or whatever that has a v-pointer and a data-pointer. and then you get a new vtable for each class that implements each interface. 
+
+i guess interface inheritance is represented as the child implementing the parrent? 
+
+when you're calling the method on the object directly it already works because it just shows up as the object adding that method and its in its vtable. 
+
+the problem is that there's no explicit translation from normal class object to interface object. you can create an object, store it in a variable, load it back and do an invokeinterface on it. the load/store doesnt tell you any more than its an Object. So every instance must be a thing you can invokeinterface on. So no matter what class it actually is, it needs to be the same runtime operation, can't just put it in the vtable because they can't be at the same place for every possible implimenter because its not a direct hiarchy anymore. maybes it has to be the same as instanceof checks and you get a new field in your root vtable that's a linked list of all the interfaces you implement and a vtable for them. tho that sounds really slow, good start. 
+
+so need to see every interface type that's referenced and create a vtable type for it. 
+
+
 
 ## no-op monitor (Nov 30)
 
