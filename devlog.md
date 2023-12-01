@@ -3,7 +3,13 @@
 - redo stack_comptime_safe check 
 - cleanup emitting blocks & phi nodes, statemachine is a bit weird 
 - handle exception catch blocks properly 
-- do a lock instead of no-op for monitors
+- do a lock instead of no-op for monitors (just atomic set a bit in the object header?)
+- make interfaces more efficient 
+- clean up emiting vtable, seems redundant things could be factored out 
+- write something that looks at the binary and breaks down space of functions and vtable data 
+- multidimensional arrays are done in a silly way 
+- im specifal case not emiting the clinit for Throwable because i want to be able to compile exceptions because lots of interesting things use them but dont use them as control flow so its fine if they just abort the program. 
+- replace stub for java_lang_System_arraycopy
 
 ## todo: real jdk tests
 
@@ -12,7 +18,7 @@ https://github.com/openjdk/jdk/tree/master/test/jdk/java
 the ones in `lang` at least seem orgnaised into little programs with a main method which is very helpful. 
 
 - init exceptions (dont need to catch)
-- instanceof
+- string concatenation 
 - standalone program from main(String...) 
 
 ## interfaces 

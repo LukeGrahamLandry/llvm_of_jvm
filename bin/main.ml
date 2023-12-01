@@ -202,7 +202,7 @@ let rec op_stack_delta op =
     | (OpNeg _) | (OpIInc _) 
     | OpGoto _
     | OpInvalid
-    | (OpNewArray _) | OpArrayLength | (OpGetField _) | (OpInstanceOf _)
+    | (OpNewArray _) | OpArrayLength | (OpGetField _) | (OpInstanceOf _) | (OpCheckCast _)
     -> 0
 
     | OpThrow -> -1
@@ -388,6 +388,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | LogThrow
 | InstCheck
 | FindInterface
+| CheckCast
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -403,6 +404,7 @@ let intrinsic_signature ctx op =
         | FillStr -> "fill_string_const", [arr_t; arr_t], void_type ctx.context
         | LogThrow -> "log_throw", [arr_t], void_type ctx.context
         | InstCheck -> "check_instanceof", [arr_t; arr_t], i1_type ctx.context
+        | CheckCast -> "assert_instanceof", [arr_t; arr_t], void_type ctx.context
         | FindInterface -> "resolve_interface_vtable", [arr_t; arr_t], arr_t
     in
     (name, args, ret)
@@ -550,14 +552,14 @@ let find_global ctx comp sign =
     Hashtbl.replace comp.globals sign global;
     global
 
-let parent_field_sign super = (* It's a bit misleading to say this is the type of the field because its an inlined struct not a pointer. *)
-    make_fs "__parent" (TObject (TClass super))
-
-
 let tobjcls = 
     (TObject (TClass (make_cn "java.lang.Object")))
 
-    (* is it like remembering the first type you write to the pointer in obj somehow? *)
+        
+let parent_field_sign = (* It's a bit misleading to say this is the type of the field because its an inlined struct not a pointer. *)
+    make_fs "__parent" tobjcls
+
+
 let vtable_field_sign = (* TODO: its very cringe that im saying a java type here but it works for now *)
     make_fs "__vtable" tobjcls
 
@@ -602,7 +604,6 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
     match Hashtbl.find_opt comp.wip_vtable_memo class_name with
     | Some vtable -> vtable
     | None -> (* haven't seen yet *)
-
     
     let cls = get_class comp.classes class_name in
     let ptr_ty = pointer_type ctx.context in
@@ -653,10 +654,11 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
 
             let vtable_value = const_named_struct interface_vtable.ty (Array.of_list vstruct_values) in
             let vtable_value_ptr = define_global ("vtable_" ^ name ^ "_impl_" ^ (cn_name interface_cn)) vtable_value ctx.the_module in
+            set_global_constant true vtable_value_ptr;
 
             let node_value = const_named_struct interfaceinfo_ty (Array.of_list [prev_vptr; vtable_value_ptr; interface_vtable.value_ptr]) in
-
             let vptr = define_global ("node_" ^ name ^ "_impl_" ^ (cn_name interface_cn)) node_value ctx.the_module in
+            set_global_constant true vptr;
 
             (Some vptr, interfaces)
         in
@@ -727,6 +729,7 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
 
     let vtable_value = const_named_struct vtable_ty (Array.of_list vstruct_values) in
     let vtable_value_ptr = define_global ("vtable_" ^ name) vtable_value ctx.the_module in
+    set_global_constant true vtable_value_ptr;
 
     let fields = Hashtbl.of_seq (List.to_seq fields) in 
     let vtable = { ty=vtable_ty; value_ptr=vtable_value_ptr; fields; value_direct=vtable_value} in
@@ -752,8 +755,7 @@ let rec find_class_lltype ctx comp class_name =
         (vtable_field_sign, pointer_type ctx.context) :: field_info
     | Some super -> 
         let { ty=lparent; _ } = find_class_lltype ctx comp super in
-        let jparent = parent_field_sign super in
-        (jparent, lparent) :: field_info
+        (parent_field_sign, lparent) :: field_info
     in
 
     let vtable = find_vtable ctx comp class_name in
@@ -765,8 +767,6 @@ let rec find_class_lltype ctx comp class_name =
     
     let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
     
-    (* TODO: does llvm mess with field order? TODO: add canary to object header. *)
-    
     let name = JPrint.class_name class_name in
     let name = replace_chars name ".$" '_' in
     (* TODO: store indexes of each field *)
@@ -776,10 +776,11 @@ let rec find_class_lltype ctx comp class_name =
     let v = { ty=ll; fields=field_slots; vtable } in
     Hashtbl.replace comp.structs class_name v;
 
-    (* TODO: force reference <clinit> even if it isnt an entry point *)
+    (* TODO: collect these clinits in a list and emit a new function that calls them all. order is scary tho. *)
     let clinit_ms = make_ms "<clinit>" [] None in
     let has_static_block = defines_method cls clinit_ms in
-    (if has_static_block then let _ = find_func ctx comp (make_cms class_name clinit_ms) in ());
+    let hackhackhack = (cn_equal class_name (make_cn "java.lang.Throwable")) in
+    (if has_static_block && not hackhackhack then let _ = find_func ctx comp (make_cms class_name clinit_ms) in ());
     v
 
 let rec get_field_ptr ctx comp obj classname sign =
@@ -790,7 +791,7 @@ let rec get_field_ptr ctx comp obj classname sign =
         let cls = get_class comp.classes classname in
         let super = assert_super cls in
         (* alas, not a tail call *)
-        let (parent_ptr, _) = get_field_ptr ctx comp obj classname (parent_field_sign super) in
+        let (parent_ptr, _) = get_field_ptr ctx comp obj classname parent_field_sign in
         get_field_ptr ctx comp parent_ptr super sign
         
     | Some field -> (* The field was declared by this class. *)
@@ -953,6 +954,7 @@ let convert_method ctx code current_cms comp =
         let len = const_int (i32_type ctx.context) len in
         let data = const_stringz ctx.context s in
         let data = define_global "str" data ctx.the_module in
+        set_global_constant true data;
         let str_cls = (make_cn "java.lang.String") in
         let obj = make_new_uninit str_cls in
 
@@ -1156,6 +1158,18 @@ let convert_method ctx code current_cms comp =
 
             let (result, _) = call_intin InstCheck [target_vptr; current_vptr] in
             result :: drop_fst compstack
+            
+        | OpCheckCast target_class_ty -> (* todo kinda copy paste from OpInstanceOf *)
+            let target_class = (match target_class_ty with
+                | TArray _ -> todo "OpCheckCast array"
+                | TClass c -> c
+            ) in
+            let target_vptr = (find_vtable ctx comp target_class).value_ptr in
+
+            let vptr_field_ptr = List.hd compstack in  (* TODO: this relies on vtable being first field *)
+            let current_vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
+            let _ = call_intin CheckCast [target_vptr; current_vptr] in
+            compstack
 
         | OpGetStatic (classname, field_sign) ->
             let cfs = make_cfs classname field_sign in
@@ -1363,7 +1377,7 @@ let () =
             let (cs, ms) = cms_split cms in
             let base_method = find_base_declaration comp cs ms in
             let base_method = (make_cms base_method ms) in
-            let has_vcall = not (Hashtbl.find_opt comp.virtually_called base_method == None) in
+            let has_vcall = not (Hashtbl.find_opt comp.virtually_called base_method == None) in (* TODO: this needs to include invokeinterface *)
             Hashtbl.remove comp.funcs_vtabled cms;
             if has_vcall then (
                 let vcalls = Hashtbl.length comp.virtually_called in

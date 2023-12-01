@@ -1,3 +1,4 @@
+import java.security.AccessController;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -70,28 +71,47 @@ public class TestObjs {
 
         var al = new ArrayList();
 
+        // == interfaces == 
+
         if (new Four().getNum() != 4) return 25;
         if (new Five().getNum() != 5) return 26;
 
         if (!(new Four() instanceof Four)) return 27;
 
         GetNum n = new Four();
-        int v = n.getNum();
-        if (v != 4) return v;
-        
-        // n = new Five();
-        // if (n.getNum() != 5) return 28;
+        if (n.getNum() != 4) return 28;
 
-        // var ul = Collections.unmodifiableList(al);
+        n = new Five();
+        if (n.getNum() != 5) return 27;
 
-        // need instanceof RandomAccess (maybe for throwable like assertzero)
-        // var v = "hi".charAt(0);
+        Five nn = (Five) n;
 
-        // doesn't work either
-        // something in byte[] java.lang.StringCoding.encode(char[], int, int) (not comptime stack safe?)
+        //  void java.lang.SecurityManager.checkPermission(java.security.Permission)
+        "hi".charAt(0);
+        // if ("hi".charAt(0) !='h') return 28;
+
+        var ul = Collections.unmodifiableList(al);
+
+        var ab = "a" + "b";
+        // var ab2 = concat("a", "b");
+
+        // oh shit
+        // NOT YET IMPLEMENTED: stack_delta invokedynamic makeConcatWithConstants:(Ljava/lang/String;)Ljava/lang/String;\n\t method_ref {\n\t   method-handle : invokestatic, method : java.lang.invoke.CallSite java.lang.invoke.StringConcatFactory::makeConcatWithConstants(java.lang.invoke.MethodHandles$Lookup,java.lang.String,java.lang.invoke.MethodType,java.lang.String,java.lang.Object[])\n\t }\n\t bootstrap_arguments {\n\t   string 'Hello \\001'\n\t 
+        // sayhi("bob");
+
+        // NOT YET IMPLEMENTED: stack_delta dupX1
         // var vv = "hi".getBytes();
-        
+
+        // System.out.println("Hello World!");
         return 0;
+    }
+
+    static String concat(String a, String b) {
+        return a + b;
+    }
+
+    static String sayhi(String name) {
+        return "Hello " + name;
     }
 
     static interface GetNum {
@@ -147,9 +167,7 @@ public class TestObjs {
     static int globalinnonentry = 15;
 
     static void assertzero(int a) {
-        // TODO: fix Throwable clinit
-        // "NOT YET IMPLEMENTED: stack_delta instanceof java.util.RandomAccess"
-        // if (a != 0) throw new RuntimeException();
+        if (a != 0) throw new RuntimeException();
     }
 
     static int ternary_max(int a, int b) {

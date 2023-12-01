@@ -14,26 +14,30 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - Math on all primitive types (+, -, *, =, %)
 - Bitwise operations (>>, <<, |, &)
 - Comparison on all primitive types (==, !=, >=, <=, <, >)
-- Jumps (If, IfCmp): ifs, while/for loops
+- Jumps (If, IfCmp): ifs, while/for loops, ternary operator
 - Casts between primitive types
 - Static methods, fields, initializer blocks, and native methods
 - Arrays and multidimensional arrays
 - Class fields
 - Inheritance
 - Virtual method calls
+- Instanceof checks
+- Abstract methods and interfaces
 
 ### Incomplete
 
 - tests for all casts and bitwise op
 - tests for math on mixed primitive types and with overflow
 - cmp of long/float/double that uses the value produced instead of jumping
-- ternary operator phi node
 - divide by zero trap
-- overloaded functions name mangling 
+- deterministic name mangling for overloaded functions 
 - automaticlly call `_clinit_` on every class that needs it
-- figure out what a `char` is
 - garbage collection 
 - exceptions instead of assertions for bounds checks 
+- interface method calls require traversing a linked list
+- actually handle locks for syncronised blocks
+- try/catch blocks
+
 
 ## Libraries Used 
 

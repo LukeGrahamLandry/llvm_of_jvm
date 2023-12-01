@@ -14,7 +14,7 @@
 
 
 typedef struct AnyArray {
-    ObjHeader header;
+    ObjHeader header; // TODO: fill this in. Arrays extend Objetct and implement no interfaces. 
     i32 length; 
     // These are for debugging my compiler. Can be removed later since I trust javac to only emit well typed classfiles. 
     i16 debug_canary;
@@ -71,13 +71,13 @@ i32 array_length(AnyArray* arr) {
         assert(inner_len >= 0);                                                         \
         if (depth > 0) {                                                                \
             for (i32 i=0;i<outer->h.length;i++) {                                       \
-                Array_objptr* arr = outer->data[i];                                     \
+                Array_objptr* arr = (Array_objptr*) outer->data[i];                     \
                 array_fillmulti_##ty(inner_len, arr, depth - 1);                        \
             }                                                                           \
             return outer;                                                               \
         }                                                                               \
         for (i32 i=0;i<outer->h.length;i++) {                                           \
-            outer->data[i] = array_init_##ty(inner_len);                                \
+            outer->data[i] = (objptr) array_init_##ty(inner_len);                       \
         }                                                                               \
         return outer;                                                                   \
     }                                                                                   \
@@ -109,6 +109,10 @@ void log_throw(objptr throwable) {
 
 // TODO: fragile because if you dont seem to call a native method it emits an empty body for you so cant define 
 // TODO: do this properly 
+// char* java_lang_Throwable_fillInStackTrace(char* obj, i32 dummy) {
+//     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
+//     return obj;
+// }
 char* java_lang_Throwable_fillInStackTrace1(char* obj, i32 dummy) {
     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
     return obj;
@@ -123,7 +127,10 @@ void java_lang_Object_registerNatives(){
 
 }
 
-
+void java_lang_System_arraycopy(objptr src, i32 srcPos, objptr dest, i32 destPos, i32 length) {
+    printf("TODO: implement java_lang_system_arraycopy!\n"); 
+    exit(1);
+}
 
 #undef generic_array
 #undef OBJ_TYPE_ID
