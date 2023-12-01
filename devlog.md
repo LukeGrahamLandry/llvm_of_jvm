@@ -10,6 +10,8 @@
 - multidimensional arrays are done in a silly way 
 - im specifal case not emiting the clinit for Throwable because i want to be able to compile exceptions because lots of interesting things use them but dont use them as control flow so its fine if they just abort the program. 
 - replace stub for java_lang_System_arraycopy
+- should really seperate TestObjs out into different files that different stages of my compiler would pass. im just lazy cause boilerplate of calling them is annoying. 
+- think about caching because its silly to recompile the jre every time but also i'd really like my compiler to be fast enough that it doesn't matter because debugging cache invalidation doesn't sound fun 
 
 ## todo: real jdk tests
 
@@ -21,7 +23,11 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 - string concatenation 
 - standalone program from main(String...) 
 
-## interfaces 
+## interface virtually_called (Dec 1)
+
+similar to normal virtual methods, need to emit the method for all implementing classes even if its never called directly on that class if its ever called on an interface object. 
+
+## interfaces (Nov 30)
 
 next in the quest to compile String.charAt, is handling `instanceof java.util.RandomAccess` in `java.util.List java.util.Collections.unmodifiableList(java.util.List)`
 

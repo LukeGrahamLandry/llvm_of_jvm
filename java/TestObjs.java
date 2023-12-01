@@ -80,15 +80,26 @@ public class TestObjs {
 
         GetNum n = new Four();
         if (n.getNum() != 4) return 28;
-
         n = new Five();
         if (n.getNum() != 5) return 27;
 
         Five nn = (Five) n;
 
+        n = new Four();
+        if (n.callindirect() != 1) return 29;
+        n = new Five();
+        if (n.callindirect() != 2) return 30;
+        new Six();
+
+        WithDefault d = new UseDefault();
+        if (d.doop(5) != 10) return 31;
+        d = new ChangeDefault();
+        if (d.doop(5) != 25) return 32;
+
+
         //  void java.lang.SecurityManager.checkPermission(java.security.Permission)
         "hi".charAt(0);
-        // if ("hi".charAt(0) !='h') return 28;
+        // if ("hi".charAt(0) !='h') return 31;
 
         var ul = Collections.unmodifiableList(al);
 
@@ -116,11 +127,17 @@ public class TestObjs {
 
     static interface GetNum {
         int getNum();
+
+        int callindirect();
     }
 
     static class Four implements GetNum {
         public int getNum() {
             return 4;
+        }
+
+        public int callindirect() {
+            return 1;
         }
     }
 
@@ -132,6 +149,21 @@ public class TestObjs {
 
         public int getNum() {
             return 5;
+        }
+
+        public int callindirect() {
+            return 2;
+        }
+    }
+
+    // interface methods never called but could be so should be emitted 
+    static class Six implements GetNum {
+        public int getNum() {
+            return 6;
+        }
+
+        public int callindirect() {
+            return 3;
         }
     }
 
@@ -273,6 +305,24 @@ public class TestObjs {
         if (!(c instanceof Object)) return 29;
         return 0;
     }
+
+    static interface WithDefault {
+        default int doop(int a) {
+            return a + a;
+        }
+    } 
+
+    static class UseDefault implements WithDefault {
+
+    }
+
+    static class ChangeDefault implements WithDefault {
+        @Override
+        public int doop(int a) {
+            return a * a;
+        }
+    }
+
 
     // Not referenced and this class isn't a root so won't even try to compile these. 
     public static native void thisdoesntexist();

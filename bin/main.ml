@@ -449,6 +449,7 @@ type compilation = {
     virtually_called: (class_method_signature, unit) Hashtbl.t;
     overload_count: (string, int) Hashtbl.t;
     wip_vtable_memo: (class_name, vtableinfo) Hashtbl.t;
+    interface_called: (class_method_signature, unit) Hashtbl.t;
 }
 
 let get_super childcls = 
@@ -564,7 +565,9 @@ let vtable_field_sign = (* TODO: its very cringe that im saying a java type here
     make_fs "__vtable" tobjcls
 
 (* walk up the chain and find the one who isn't overriding the method 
-   Ie. Integer.toString returns Object *)
+   Ie. Integer.toString returns Object 
+   Note: for interface methods, it returns the first class in the chain to implement it NOT the interface itself 
+        default methods may have None and thus crash so this should only be called when you know there's ~some~ override *)
 let find_base_declaration comp cn ms =
     let rec aux comp cn ms = 
         let check_cls = get_class comp.classes cn in
@@ -579,7 +582,33 @@ let find_base_declaration comp cn ms =
         | None -> (* no super class. either I declare it or I don't *)
             if i_declare then Some cn else None
     in
-    Option.get (aux comp cn ms)
+    match aux comp cn ms with 
+    | Some c -> c 
+    | None -> illegal ("find_base_declaration failed on " ^ (JPrint.class_method_signature (make_cms cn ms)) ^ ". interface default method?")
+
+
+(* find all the interfaces implemented by <cn> including by its super classes and interfaces implemented by its interfaces *)
+(* TODO: this should be a Seq iterator instead of allocating the whole list. *)
+let rec all_interfaces comp cn = 
+    let cls = get_class comp.classes cn in
+    match cls with
+    | JInterface info -> (* itself and any supers *)
+        cn :: List.concat_map (all_interfaces comp) info.i_interfaces
+        
+    | JClass info -> 
+        let supers = match get_super cls with
+        | None -> []
+        | Some super -> all_interfaces comp super  
+        in
+
+        info.c_interfaces @ supers
+
+(* find the interface that <cn> implements that provides <ms> *)
+let find_interface_declaration comp cn ms =
+    let defines i = 
+        defines_method (get_class comp.classes i) ms
+    in
+    List.find_opt defines (all_interfaces comp cn)
 
 (* Find the class who's method you'd call if you called `ms` on `cn`.
    The class that declares the method lowest in the chain. *)
@@ -588,7 +617,7 @@ let rec resolve_override comp cn ms =
     if defines_method cls ms then Some cn else 
     match get_super cls with
     | Some super -> resolve_override comp super ms
-    | None -> None
+    | None -> None (* TODO: interface default method? *)
 
 (* returns [ childname; ...; java.lang.Object; ] *)
 let rec inheritance_chain comp childname = 
@@ -602,7 +631,7 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
     | Some { vtable; _ } -> vtable
     | None -> (* haven't seen yet *)
     match Hashtbl.find_opt comp.wip_vtable_memo class_name with
-    | Some vtable -> vtable
+    | Some vtable -> vtable (* find_vtable is called recursivly so it might not be in the structs map yet but still needs to refer to same global address for a given class *)
     | None -> (* haven't seen yet *)
     
     let cls = get_class comp.classes class_name in
@@ -633,14 +662,11 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
             let lang_object_vtable = find_vtable ctx comp (make_cn "java.lang.Object") in
 
             let vstruct_values = Hashtbl.fold (fun sign value prev -> 
-                eprintf "vstruct_values %s IN %s\n" (JPrint.class_method_signature (make_cms interface_cn sign)) (JPrint.class_name class_name);
-                (* TODO: defaults methods might not show up in the normal class hiarchy *)
-
                 let func = match resolve_override comp class_name sign with 
                 | Some target_class -> find_func_inner false ctx comp (make_cms target_class sign)
                 | None -> 
-                    eprintf "TODO: default method %s\n" (JPrint.class_method_signature (make_cms interface_cn sign));
-                    const_null ptr_ty 
+                    (* default method that isn't overriden *)
+                    find_func_inner false ctx comp (make_cms interface_cn sign)
                 in
                 
                 (value.index, func) :: prev
@@ -1113,6 +1139,8 @@ let convert_method ctx code current_cms comp =
             call_maybe_virtual classname target_sign compstack
         
         | OpInvoke ((`Interface interface_cn), target_sign) -> 
+            Hashtbl.replace comp.interface_called (make_cms interface_cn target_sign) ();
+
             let arg_count = List.length (ms_args target_sign) in
             let obj_data_ptr = List.nth compstack arg_count in
 
@@ -1345,6 +1373,7 @@ let () =
         virtually_called = Hashtbl.create 0; 
         overload_count = Hashtbl.create 0; 
         wip_vtable_memo = Hashtbl.create 0;
+        interface_called = Hashtbl.create 0;
     } in
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)
@@ -1374,25 +1403,40 @@ let () =
         match take_any comp.funcs_vtabled with
         | None -> ()
         | Some (cms, func) -> 
-            let (cs, ms) = cms_split cms in
-            let base_method = find_base_declaration comp cs ms in
-            let base_method = (make_cms base_method ms) in
-            let has_vcall = not (Hashtbl.find_opt comp.virtually_called base_method == None) in (* TODO: this needs to include invokeinterface *)
             Hashtbl.remove comp.funcs_vtabled cms;
-            if has_vcall then (
-                let vcalls = Hashtbl.length comp.virtually_called in
-                Hashtbl.replace comp.func_queue cms func;
-                emit_next ();
-                (* TODO: the method you just did might have added things to virtually_called that you already emitted a trap for *)
-                assert (vcalls == Hashtbl.length comp.virtually_called);
-                ()
-            ) else (
-                (* eprintf "WARNING: emit unreachable method stub for [%s] extends [%s] %b\n" (JPrint.class_method_signature cms) (JPrint.class_method_signature base_method) has_vcall; *)
-                let entry = append_block ctx.context "entry_trap" func in 
-                position_at_end entry ctx.builder;
-                let _ = build_unreachable ctx.builder in
-                ()
-            );
+            let (cs, ms) = cms_split cms in
+            let _ = match find_interface_declaration comp cs ms with 
+            | Some interface -> 
+                let called = not ((Hashtbl.find_opt comp.interface_called (make_cms interface ms)) = None) in
+                if called then(
+                    Hashtbl.replace comp.func_queue cms func;
+                    emit_next ()) (* TODO: like below, this might call more interfaces or virtuals that you already emited traps*)
+                else (
+                    (* eprintf "WARNING: emit unreachable method stub for [%s] extends [%s] %b\n" (JPrint.class_method_signature cms) (JPrint.class_method_signature base_method) has_vcall; *)
+                    let entry = append_block ctx.context "entry_trap_i" func in 
+                    position_at_end entry ctx.builder;
+                    let _ = build_unreachable ctx.builder in
+                    ()
+                )
+            | None -> 
+                let base_method = find_base_declaration comp cs ms in
+                let base_method = (make_cms base_method ms) in
+                let has_vcall = not (Hashtbl.find_opt comp.virtually_called base_method == None) in (* TODO: this needs to include invokeinterface *)
+                if has_vcall then (
+                    let vcalls = Hashtbl.length comp.virtually_called in
+                    Hashtbl.replace comp.func_queue cms func;
+                    emit_next ();
+                    (* TODO: the method you just did might have added things to virtually_called that you already emitted a trap for *)
+                    assert (vcalls == Hashtbl.length comp.virtually_called);
+                    ()
+                ) else (
+                    (* eprintf "WARNING: emit unreachable method stub for [%s] extends [%s] %b\n" (JPrint.class_method_signature cms) (JPrint.class_method_signature base_method) has_vcall; *)
+                    let entry = append_block ctx.context "entry_trap_c" func in 
+                    position_at_end entry ctx.builder;
+                    let _ = build_unreachable ctx.builder in
+                    ()
+                )
+            in
 
             emit_trap_func ()
     in
