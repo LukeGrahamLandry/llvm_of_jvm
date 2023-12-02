@@ -37,6 +37,43 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 - string concatenation 
 - standalone program from main(String...) 
 
+
+## profiling 
+
+- [] `git clone https://github.com/Kelvenbit/FlameGraphs-Instruments`
+- rightclick xcode app > Open Developer Tool > Instruments 
+- [] setup a Time Profiler thing with the right exe, cli args, and working directory 
+- [] File > Save As Template, to make a .tracetemplate file to use with xctrace (saves only what type of profiling not which exe?)
+- `xctrace record --template 'instruments.tracetemplate' --launch --  ./_build/default/bin/main.exe OpTest`
+- then in Instruments, you can Open Existing File of a .trace directory created by xctrace
+- select the top symbol in the table
+- Edit > Deep Copy
+- now its in your clipboard 
+- [] `cd FlameGraphs-Instruments`
+- `swift run FlameGraph output.svg`
+
+need to figure out how to export from xctrace to the format FlameGraphs-Instruments understands. it will take input from file `swift run FlameGraph -f intput.csv output.svg` and `xctrace export ...` can make a file but want csv and get big xml thing
+
+Even looking at the flamegraph it seems like caml_c_call is like a top level thing not called inside different functions so I guess I wasn't just misinterpreting the gui. Is there like a wierd dispatch loop thing at the top every time it tries to call a c function? that seems unreasonable. 
+
+look at asm: `objdump --disassemble ./_build/default/bin/main.exe > main.s`
+
+Also I'm pretty sure there are debug sysmbols in there, I have -g and I can see function names in the dissassembly but I don't see any of my functions in the trace and I do see a bunch with just addresses. Am I just spending so little time in my own code that it doesn't show up? 
+In asm, all my functions have camlDune prefix and the only one in trace is  `camlDune__exe__Main.mangled_name_2013` so they must be there, and just all the time is in gc or whatever. Its not just inlining them away because I can trace calls back up to _caml_program. 
+
+Calls to _caml_c_call happen in normal functions tho so I don't understand why they don't show up in the trace. Does ocaml use like a different calling convention that somehow doesn't save return addresses in the place Instruments is trying to look? 
+
+Also CLion's profiler works on arbitrary executables with less pain. It gives different information.
+
+I've discovered tho that _camlZip.read_cd_681 is the one calling caml_unix_mktime for 10% of the time somehow. 
+
+Using CLions debugger and just pausing at a random place I can see the call stack including my functions so it definitly has the names 
+
+Ok we've learned something, calling `get_class` calls `camlJavalib_pack.JFile.fold_directories_480` so its reloading and parsing the class file from disk every time I do anything, like for every emthod in every interface implementation by every class, im reloading the whole inheritance tree. Trivial change got it from 850ms to 145ms. now i can like never call a method in that library if it might reparse the class. 
+- https://github.com/javalib-team/javalib/blob/master/src/jFile.ml#L151
+
+
+
 ## interface virtually_called (Dec 1)
 
 similar to normal virtual methods, need to emit the method for all implementing classes even if its never called directly on that class if its ever called on an interface object. 

@@ -2,4 +2,4 @@
  (public_name llvm_of_jvm)
  (name main)
  (libraries llvm_of_jvm llvm javalib)
- (ocamlopt_flags (:standard -O2)))
+ (ocamlopt_flags (:standard -O2 -g)))

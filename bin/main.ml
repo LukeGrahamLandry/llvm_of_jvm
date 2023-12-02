@@ -459,6 +459,7 @@ type compilation = {
     overload_count: (string, int) Hashtbl.t;
     wip_vtable_memo: (class_name, vtableinfo) Hashtbl.t;
     interface_called: (class_method_signature, unit) Hashtbl.t;
+    class_cache: (class_name, jcode interface_or_class) Hashtbl.t;
 }
 
 let javalangObject = make_cn "java.lang.Object"
@@ -467,6 +468,14 @@ let javalangString = make_cn "java.lang.String"
 
 let clinit_ms = make_ms "<clinit>" [] None
 let string_value_field_sign = make_fs "value" (TObject (TArray (TBasic `Char))) 
+
+let get_class_cached comp cn = 
+    match Hashtbl.find_opt comp.class_cache cn with
+    | Some c -> c
+    | None -> 
+        let c = get_class comp.classes cn in
+        Hashtbl.replace comp.class_cache cn c;
+        c
 
 let get_super childcls = 
     match childcls with
@@ -516,20 +525,20 @@ let emit_static_field ctx anyfield =
         let v = define_global name init_val ctx.the_module in
         { place=Mut v; ty }
 
-let is_static_cms classes sign = 
+let is_static_cms comp sign = 
     let (cs, ms) = cms_split sign in
-    let cls = get_class classes cs in
+    let cls = get_class_cached comp cs in
     let cm = get_concrete_method cls ms in
     cm.cm_static
 
-let method_of_cms classes sign = 
+let method_of_cms comp sign = 
     let (cs, ms) = cms_split sign in
-    let cls = get_class classes cs in
+    let cls = get_class_cached comp cs in
     get_method cls ms
 
-let field_of_cfs classes sign = 
+let field_of_cfs comp sign = 
     let (cs, fs) = cfs_split sign in
-    let cls = get_class classes cs in
+    let cls = get_class_cached comp cs in
     get_field cls fs
 
 (* TODO: its a bit unserious for every method call to be three lookups *)
@@ -552,7 +561,7 @@ let find_func_inner referenced ctx comp sign =
         f
     | None -> (* haven't seen it yet *)
 
-    let m = method_of_cms comp.classes sign in
+    let m = method_of_cms comp sign in
     if referenced && is_synchronized_method m then eprintf "Warning: referenced synchronized method %s\n" (JPrint.class_method_signature sign);
     let func = forward_declare_method ctx comp m in
     let funcs = if referenced then comp.func_queue else comp.funcs_vtabled in
@@ -566,7 +575,7 @@ let find_global ctx comp sign =
     | Some f -> f
     | None -> (* haven't seen yet *)
 
-    let field = field_of_cfs comp.classes sign in
+    let field = field_of_cfs comp sign in
     let global = emit_static_field ctx field in
     Hashtbl.replace comp.globals sign global;
     global
@@ -585,7 +594,7 @@ let vtable_field_sign =  make_fs "__vtable" tobjcls
         default methods may have None and thus crash so this should only be called when you know there's ~some~ override *)
 let find_base_declaration comp cn ms =
     let rec aux comp cn ms = 
-        let check_cls = get_class comp.classes cn in
+        let check_cls = get_class_cached comp cn in
         let i_declare = defines_method check_cls ms in
         match get_super check_cls with
         | Some super -> 
@@ -605,7 +614,7 @@ let find_base_declaration comp cn ms =
 (* find all the interfaces implemented by <cn> including by its super classes and interfaces implemented by its interfaces *)
 (* TODO: this should be a Seq iterator instead of allocating the whole list. *)
 let rec all_interfaces comp cn = 
-    let cls = get_class comp.classes cn in
+    let cls = get_class_cached comp cn in
     match cls with
     | JInterface info -> (* itself and any supers *)
         cn :: List.concat_map (all_interfaces comp) info.i_interfaces
@@ -621,14 +630,14 @@ let rec all_interfaces comp cn =
 (* find the interface that <cn> implements that provides <ms> *)
 let find_interface_declaration comp cn ms =
     let defines i = 
-        defines_method (get_class comp.classes i) ms
+        defines_method (get_class_cached comp i) ms
     in
     List.find_opt defines (all_interfaces comp cn)
 
 (* Find the class who's method you'd call if you called `ms` on `cn`.
    The class that declares the method lowest in the chain. *)
 let rec resolve_override comp cn ms = 
-    let cls = get_class comp.classes cn in
+    let cls = get_class_cached comp cn in
     if defines_method cls ms then Some cn else 
     match get_super cls with
     | Some super -> resolve_override comp super ms
@@ -636,7 +645,7 @@ let rec resolve_override comp cn ms =
 
 (* returns [ childname; ...; java.lang.Object; ] *)
 let rec inheritance_chain comp childname = 
-    let cls = get_class comp.classes childname in
+    let cls = get_class_cached comp childname in
     match get_super cls with
     | Some super -> childname :: inheritance_chain comp super
     | None -> [childname]
@@ -647,7 +656,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
     | Some vtable -> vtable 
     | None -> (* haven't seen yet *)
     
-    let cls = get_class comp.classes class_name in
+    let cls = get_class_cached comp class_name in
     let ptr_ty = pointer_type ctx.context in
     let name = safe_cn class_name in
 
@@ -661,7 +670,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
         let emit_interface_impl_vtable (prev, interfaces) interface_cn = 
             assert (not ((get_super cls) == None)); (* Object implements no interfaces *)
 
-            let _interface_cls = match get_class comp.classes interface_cn with 
+            let _interface_cls = match get_class_cached comp interface_cn with 
             | JInterface c -> c | JClass _ -> assert false
             in
 
@@ -712,7 +721,7 @@ let rec find_vtable ctx comp class_name: vtableinfo =
 
     (* no super class (java.lang.Object), has a slot for the vptr of the parent class. used for instanceof checks *)
     let root_vtable_ty = struct_type ctx.context (Array.of_list [ptr_ty; ptr_ty;]) in
-    let parent_vptr = match get_super (get_class comp.classes class_name) with
+    let parent_vptr = match get_super (get_class_cached comp class_name) with
     | Some cls -> (find_vtable ctx comp cls).value_ptr
     | None -> const_null ptr_ty
     in
@@ -782,7 +791,7 @@ let rec find_class_lltype ctx comp class_name =
     | Some f -> f
     | None -> (* haven't seen yet *)
     
-    let cls = get_class comp.classes class_name in
+    let cls = get_class_cached comp class_name in
     let fields = FieldMap.filter (fun f -> not (is_static_field f)) (get_fields cls) in
     let add_field sign _value acc = 
         let ty = lltype_of_valuetype ctx (fs_type sign) in
@@ -827,7 +836,7 @@ let rec get_field_ptr ctx comp obj classname sign =
     let field = Hashtbl.find_opt fields sign in
     match field with
     | None -> (* the field was declared on a parent class. look up the chain. *)
-        let cls = get_class comp.classes classname in
+        let cls = get_class_cached comp classname in
         let super = assert_super cls in
         (* alas, not a tail call *)
         let (parent_ptr, _) = get_field_ptr ctx comp obj classname parent_field_sign in
@@ -907,7 +916,7 @@ let total_seen = ref 0  (* TODO: can remove. was just curious *)
 
 let convert_method ctx code current_cms comp = 
     let current_sign = snd (cms_split current_cms) in
-    let is_static = is_static_cms comp.classes current_cms in
+    let is_static = is_static_cms comp current_cms in
     let func = find_func ctx comp current_cms in 
     let ret_ty = ms_rtype current_sign in
 
@@ -954,9 +963,9 @@ let convert_method ctx code current_cms comp =
         call_method_inner is_static func_value target_sign compstack
     in
     let call_maybe_virtual classname target_sign compstack = 
-        let obj_cls = get_class comp.classes classname in
+        let obj_cls = get_class_cached comp classname in
         let overriding_class = Option.get (resolve_override comp classname target_sign) in
-        let m = get_method (get_class comp.classes overriding_class) target_sign in
+        let m = get_method (get_class_cached comp overriding_class) target_sign in
 
         if is_final_method m || is_final obj_cls then (* nobody can override OR nobody past us can override *)
             call_method_direct false overriding_class target_sign compstack
@@ -1383,6 +1392,7 @@ let () =
         overload_count = Hashtbl.create 0; 
         wip_vtable_memo = Hashtbl.create 0;
         interface_called = Hashtbl.create 0;
+        class_cache = Hashtbl.create 0;
     } in
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)
@@ -1401,7 +1411,7 @@ let () =
         match take_any comp.func_queue with
         | None -> ()
         | Some (cms, _) -> 
-            let m = method_of_cms comp.classes cms in
+            let m = method_of_cms comp cms in
             emit_method ctx comp m;
             emit_next ()
     in
