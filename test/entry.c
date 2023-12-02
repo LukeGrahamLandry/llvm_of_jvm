@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
-#include "obj.h"
+#include "../runtime/obj.h"
 
 // OpTest.java
 int OpTest_add(int a, int b);
@@ -141,7 +141,3 @@ int main() {
     optestjava();
     templates();
 }
-
-// TODO: should i move this and java/* to tests/*. kinda confusing for this to be in runtime but not part of the runtime. 
-
-

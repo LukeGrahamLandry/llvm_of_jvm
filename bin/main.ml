@@ -1376,7 +1376,7 @@ let () =
     
     (* TODO: don't just hardcode the path lol *)
     (* TODO: past java 8 need to figure out what to do with a jmod file *)
-    let classes = class_path "./java:./out/java:/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib/rt.jar" in (*  *)
+    let classes = class_path "./test/java:./out/java:/Library/Java/JavaVirtualMachines/jdk1.8.0_202.jdk/Contents/Home/jre/lib/rt.jar" in (*  *)
 
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in

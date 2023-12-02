@@ -25,7 +25,7 @@ let replace before after s =
 	Str.global_replace (Str.regexp_string before) after s
 
 let template f size ty = 
-	let original = read_to_string ("java/" ^ f ^ ".txt") in
+	let original = read_to_string ("test/templates/" ^ f ^ ".java") in
 	let name = (replace "TYPE" ty f) in
 	let new_name = "out/java/" ^ name ^ ".java" in
 	let result = replace "TYPE" ty (replace "SIZE" size original) in
@@ -49,11 +49,11 @@ let () =
 	let classes = "OpTest" :: do_templates () in
 	let classes = String.concat " " classes in
 
-	run "javac java/*.java out/java/*.java";
+	run "javac test/java/*.java out/java/*.java";
 
 	(* run things twice just to see times because first run after compiling is much slower *)
 	run ("./_build/default/bin/main.exe " ^ classes ^ " > out/test.ll");
 	run ("./_build/default/bin/main.exe " ^ classes ^ " &> /dev/null");
-	run "gcc -O2 runtime/test_prog.c out/test.ll runtime/runtime.c -o out/testbin";
+	run "gcc -O2 test/entry.c out/test.ll runtime/runtime.c -o out/testbin";
 	run "./out/testbin";
 	run "./out/testbin";

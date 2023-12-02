@@ -25,7 +25,6 @@ the flambda really doesnt matter if most of my time is in gc, mem_cmp, and llvm.
 - im specifal case not emiting the clinit for Throwable because i want to be able to compile exceptions because lots of interesting things use them but dont use them as control flow so its fine if they just abort the program. 
 - replace stub for java_lang_System_arraycopy
 - should really seperate TestObjs out into different files that different stages of my compiler would pass. im just lazy cause boilerplate of calling them is annoying. 
-- think about caching because its silly to recompile the jre every time but also i'd really like my compiler to be fast enough that it doesn't matter because debugging cache invalidation doesn't sound fun 
 
 ## todo: real jdk tests
 
