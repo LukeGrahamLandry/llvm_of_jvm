@@ -1,3 +1,17 @@
+## setup 
+
+```
+# just ignore and continue if first step says `the compilation of llvm_of_jvm.~dev failed at "dune subst".[ERROR] Command not found: dune` 
+opam switch create . ocaml-variants.5.1.0+options ocaml-option-flambda 
+eval $(opam env --set-switch)
+opam install dune
+opam install javalib
+opam install llvm
+dune build
+```
+
+the flambda really doesnt matter if most of my time is in gc, mem_cmp, and llvm.  
+
 ## todo: cleanup 
 
 - redo stack_comptime_safe check 

@@ -21,8 +21,8 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - Class fields
 - Inheritance
 - Virtual method calls
-- Instanceof checks
-- Abstract methods and interfaces
+- Instanceof checks and object casts
+- Interfaces, abstract methods, and default methods
 
 ### Incomplete
 

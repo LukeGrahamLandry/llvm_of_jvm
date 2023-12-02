@@ -53,3 +53,4 @@ let () =
 	run ("./_build/default/bin/main.exe " ^ classes ^ " > out/test.ll");
 	run "gcc -O2 runtime/test_prog.c out/test.ll runtime/runtime.c -o out/testbin";
 	run "./out/testbin";
+	

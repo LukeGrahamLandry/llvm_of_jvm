@@ -174,6 +174,11 @@ let llfunc_type ctx sign is_static =
     in
     function_type ret arg_types
 
+let safe_cn cn = 
+    let name = JPrint.class_name cn in
+    replace_chars name ".$" '_'
+
+
 (*== Hardcoded knowledge about the bytecode format ==*)
 
 let slotcount_for ty = 
@@ -438,6 +443,10 @@ type structinfo = {
     vtable: vtableinfo;
 }
 
+(* type wip_func = Done of llvalue | Queued of llvalue | Tabled of llvalue *)
+
+
+
 type compilation = {
     classes: class_path;
     intrinsics: (rt_intrinsic, lltype * llvalue) Hashtbl.t;
@@ -452,13 +461,20 @@ type compilation = {
     interface_called: (class_method_signature, unit) Hashtbl.t;
 }
 
+let javalangObject = make_cn "java.lang.Object"
+let javalangThrowable = make_cn "java.lang.Throwable"
+let javalangString = make_cn "java.lang.String"
+
+let clinit_ms = make_ms "<clinit>" [] None
+let string_value_field_sign = make_fs "value" (TObject (TArray (TBasic `Char))) 
+
 let get_super childcls = 
     match childcls with
-    | JInterface _ -> Some (make_cn "java.lang.Object")
+    | JInterface _ -> Some javalangObject
     | JClass cls -> (match cls.c_super_class with
         | Some super -> Some super
         | None -> 
-            assert ((cn_name (get_name childcls)) = "java.lang.Object");
+            assert ((cn_equal (get_name childcls)) javalangObject);
             None)
 
 let assert_super childcls = 
@@ -519,10 +535,12 @@ let field_of_cfs classes sign =
 (* TODO: its a bit unserious for every method call to be three lookups *)
 let find_func_inner referenced ctx comp sign = 
     match Hashtbl.find_opt comp.funcs_done sign with
-    | Some f -> f
+    | Some f -> 
+        f
     | None -> (* haven't compiled yet *)
     match Hashtbl.find_opt comp.func_queue sign with
-    | Some f -> f
+    | Some f -> 
+        f
     | None -> (* haven't referenced it yet *)
 
     match Hashtbl.find_opt comp.funcs_vtabled sign with
@@ -553,16 +571,13 @@ let find_global ctx comp sign =
     Hashtbl.replace comp.globals sign global;
     global
 
-let tobjcls = 
-    (TObject (TClass (make_cn "java.lang.Object")))
+let tobjcls = TObject (TClass (javalangObject))
 
         
-let parent_field_sign = (* It's a bit misleading to say this is the type of the field because its an inlined struct not a pointer. *)
-    make_fs "__parent" tobjcls
-
-
-let vtable_field_sign = (* TODO: its very cringe that im saying a java type here but it works for now *)
-    make_fs "__vtable" tobjcls
+ (* It's a bit misleading to say this is the type of the field because its an inlined struct not a pointer. *)
+let parent_field_sign = make_fs "__parent" tobjcls
+(* TODO: its very cringe that im saying a java type here but it works for now *)
+let vtable_field_sign =  make_fs "__vtable" tobjcls
 
 (* walk up the chain and find the one who isn't overriding the method 
    Ie. Integer.toString returns Object 
@@ -626,17 +641,15 @@ let rec inheritance_chain comp childname =
     | Some super -> childname :: inheritance_chain comp super
     | None -> [childname]
 
-let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls aren't memoiszed so interfaces don't work *)
-    match Hashtbl.find_opt comp.structs class_name with
-    | Some { vtable; _ } -> vtable
-    | None -> (* haven't seen yet *)
+let rec find_vtable ctx comp class_name: vtableinfo = 
+    (* find_vtable is called recursivly so it might not be in the structs map yet but still needs to refer to same global address for a given class *)
     match Hashtbl.find_opt comp.wip_vtable_memo class_name with
-    | Some vtable -> vtable (* find_vtable is called recursivly so it might not be in the structs map yet but still needs to refer to same global address for a given class *)
+    | Some vtable -> vtable 
     | None -> (* haven't seen yet *)
     
     let cls = get_class comp.classes class_name in
     let ptr_ty = pointer_type ctx.context in
-    let name = replace_chars (cn_name class_name) ".$" '_' in
+    let name = safe_cn class_name in
 
     let interfaceinfo_ty = named_struct_type ctx.context "InterfaceInfo" in
     struct_set_body interfaceinfo_ty (Array.of_list [ptr_ty; ptr_ty; ptr_ty;]) false;
@@ -659,7 +672,7 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
             (* TODO: resolve each function in the interface against my concrete class. *)
             (* let method_signs = MethodMap.filter (fun m -> not (is_static_method m)) interface_cls.i_methods in *)
             
-            let lang_object_vtable = find_vtable ctx comp (make_cn "java.lang.Object") in
+            let lang_object_vtable = find_vtable ctx comp javalangObject in
 
             let vstruct_values = Hashtbl.fold (fun sign value prev -> 
                 let func = match resolve_override comp class_name sign with 
@@ -678,12 +691,13 @@ let rec find_vtable ctx comp class_name: vtableinfo = (* TODO: recursive calls a
             let vstruct_values = List.map snd (List.sort (fun (a, _) (b, _) -> compare a b) vstruct_values) in 
 
 
+            let iname = safe_cn interface_cn in
             let vtable_value = const_named_struct interface_vtable.ty (Array.of_list vstruct_values) in
-            let vtable_value_ptr = define_global ("vtable_" ^ name ^ "_impl_" ^ (cn_name interface_cn)) vtable_value ctx.the_module in
+            let vtable_value_ptr = define_global ("vtable_" ^ name ^ "_impl_" ^ iname) vtable_value ctx.the_module in
             set_global_constant true vtable_value_ptr;
 
             let node_value = const_named_struct interfaceinfo_ty (Array.of_list [prev_vptr; vtable_value_ptr; interface_vtable.value_ptr]) in
-            let vptr = define_global ("node_" ^ name ^ "_impl_" ^ (cn_name interface_cn)) node_value ctx.the_module in
+            let vptr = define_global ("node_" ^ name ^ "_impl_" ^ iname) node_value ctx.the_module in
             set_global_constant true vptr;
 
             (Some vptr, interfaces)
@@ -793,8 +807,7 @@ let rec find_class_lltype ctx comp class_name =
     
     let field_slots = Hashtbl.of_seq (List.to_seq field_info) in
     
-    let name = JPrint.class_name class_name in
-    let name = replace_chars name ".$" '_' in
+    let name = safe_cn class_name in
     (* TODO: store indexes of each field *)
     let ll = named_struct_type ctx.context name in
     let is_packed = false in
@@ -803,9 +816,9 @@ let rec find_class_lltype ctx comp class_name =
     Hashtbl.replace comp.structs class_name v;
 
     (* TODO: collect these clinits in a list and emit a new function that calls them all. order is scary tho. *)
-    let clinit_ms = make_ms "<clinit>" [] None in
+    
     let has_static_block = defines_method cls clinit_ms in
-    let hackhackhack = (cn_equal class_name (make_cn "java.lang.Throwable")) in
+    let hackhackhack = (cn_equal class_name javalangThrowable) in
     (if has_static_block && not hackhackhack then let _ = find_func ctx comp (make_cms class_name clinit_ms) in ());
     v
 
@@ -981,15 +994,12 @@ let convert_method ctx code current_cms comp =
         let data = const_stringz ctx.context s in
         let data = define_global "str" data ctx.the_module in
         set_global_constant true data;
-        let str_cls = (make_cn "java.lang.String") in
+        let str_cls = javalangString in
         let obj = make_new_uninit str_cls in
 
-        let char_ty = (TBasic `Char) in
-        let value_field_sign = make_fs "value" (TObject (TArray char_ty)) in 
+        let chars_array = fst (call_intin (ArrInit (arraytype_of_valuetype (TBasic `Char))) [len]) in
 
-        let chars_array = fst (call_intin (ArrInit (arraytype_of_valuetype char_ty)) [len]) in
-
-        let (value_field_ptr, _) = get_field_ptr ctx comp obj str_cls value_field_sign in
+        let (value_field_ptr, _) = get_field_ptr ctx comp obj str_cls string_value_field_sign in
         let _ = build_store chars_array value_field_ptr ctx.builder in
 
         let _ = fst (call_intin (FillStr) [data; chars_array; ]) in
@@ -1327,7 +1337,6 @@ let emit_method ctx comp m =
     let sign = (match m with
     | AbstractMethod func -> (* has a vtable slot but cannot be called directly *)
         let sign = func.am_class_method_signature in
-        eprintf "Abstract Trap %s\n" (JPrint.class_method_signature sign);
         assert ((Hashtbl.find_opt comp.funcs_done sign) == None);
         let func = find_func ctx comp sign in
         let entry = append_block ctx.context "entry_trap_abstract" func in 
