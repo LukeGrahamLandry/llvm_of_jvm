@@ -2,4 +2,4 @@
  (public_name llvm_of_jvm)
  (name main)
  (libraries llvm_of_jvm llvm javalib)
- (ocamlopt_flags (:standard -O2 -g)))
+ (ocamlopt_flags (:standard -O2 /Users/luke/Documents/mods/llvm_of_jvm/out/skiptime.o)))

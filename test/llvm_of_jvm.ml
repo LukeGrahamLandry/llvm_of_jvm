@@ -50,7 +50,10 @@ let () =
 	let classes = String.concat " " classes in
 
 	run "javac java/*.java out/java/*.java";
+
+	(* run things twice just to see times because first run after compiling is much slower *)
 	run ("./_build/default/bin/main.exe " ^ classes ^ " > out/test.ll");
+	run ("./_build/default/bin/main.exe " ^ classes ^ " &> /dev/null");
 	run "gcc -O2 runtime/test_prog.c out/test.ll runtime/runtime.c -o out/testbin";
 	run "./out/testbin";
-	
+	run "./out/testbin";

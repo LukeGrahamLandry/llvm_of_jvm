@@ -72,6 +72,21 @@ Using CLions debugger and just pausing at a random place I can see the call stac
 Ok we've learned something, calling `get_class` calls `camlJavalib_pack.JFile.fold_directories_480` so its reloading and parsing the class file from disk every time I do anything, like for every emthod in every interface implementation by every class, im reloading the whole inheritance tree. Trivial change got it from 850ms to 145ms. now i can like never call a method in that library if it might reparse the class. 
 - https://github.com/javalib-team/javalib/blob/master/src/jFile.ml#L151
 
+Interesting that most of the time i saw in gc was a symptom of parsing everything repeatedly because that generates a lot of garbage, not my actual code.  
+
+now xctrace thinks like half the time is in the unix_mktime of the zip library converting dates to timestamps? 
+- https://github.com/xavierleroy/camlzip/blob/master/zip.ml#L94
+
+pretty sure I don't need `mtime = unixtime_of_dostime lastmod_time lastmod_date;` from the zip file. seems like a pain to use a modified version of the library. so what if i go to the one place in my exe that i call that and just change the instruction there. i know the calling convention i could just put a zero in x0 when it tries to make the _caml_c_call. scary to modify an ocaml call cause not sure if they pass return value the same way. ehhh this becomes a pain, successfully wrote a c program that lets me patch out an address and verified that objdump agrees with what i think i changed but doesn't work, maybe inside the method did something that the gc was expecting or its returning a pointer not a number so it tries to dereference. 
+
+idk but turns out just having the linker replace the symbol was really easy. Just compile `int mktime(void* timeptr) {return 0;}` to a .o file and add that to ocamlopt_flags and it calls that instead. Verified by printing something in there. Now we're down to 51ms. 
+Now setting up the dev env has extra step of running `gcc -c skiptime.c -o out/skiptime.o`
+
+specifying rt.jar instead of the whole lib folder shaves off another ~5ms but that's like 9% now so not bad. 
+Now most time is in _caml_ml_input_char. 
+
+So ~17x faster overall from this adventure. 
+
 
 
 ## interface virtually_called (Dec 1)
