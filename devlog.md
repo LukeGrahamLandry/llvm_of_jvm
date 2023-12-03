@@ -1,4 +1,4 @@
-## setup 
+## note: setup 
 
 ```
 # just ignore and continue if first step says `the compilation of llvm_of_jvm.~dev failed at "dune subst".[ERROR] Command not found: dune` 
@@ -13,6 +13,13 @@ opam install ocaml-lsp-server
 
 the flambda really doesnt matter if most of my time is in gc, mem_cmp, and llvm.  
 
+## note: common problems
+
+- forgot to set vptr
+- order matters for name mangling
+- methods it thinks are unreachable emit a trap 
+- if you call an interface/virtual and that itself calls an interface/virtual where you already emitted a trap 
+
 ## todo: cleanup 
 
 - redo stack_comptime_safe check 
@@ -26,6 +33,8 @@ the flambda really doesnt matter if most of my time is in gc, mem_cmp, and llvm.
 - im specifal case not emiting the clinit for Throwable because i want to be able to compile exceptions because lots of interesting things use them but dont use them as control flow so its fine if they just abort the program. 
 - replace stub for java_lang_System_arraycopy
 - should really seperate TestObjs out into different files that different stages of my compiler would pass. im just lazy cause boilerplate of calling them is annoying. 
+- array vptr
+- make a way of calling to string from c for thorwing exceptions or just pass the function pointer to log_throw
 
 ## todo: real jdk tests
 
@@ -35,6 +44,10 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 
 - use newer jre (jmod files)
 - standalone program from main(String...) 
+
+## lambdas (Dec 3)
+
+Turns out javalib has a function to replace the invokedynamic of LambdaMetafactory::metafactory (tho its somewhat misleadingly called remove_invokedynamics as though it did all of them). It generates a class that implements the right functional interface for you, very convient. Intereseting that they can handle that for me but not string concatenation, maybe this was made for java 8? I can just call that on every class I load. TODO: should only do it for reachable methods so call remove_invokedynamics_in_method in emit_method instead. Current system makes it like 20% slower but also its compiling ~3000 bytecode instructions instead of ~2000 so I'm hoping it just increased the web of lib functions it reaches not that its generating a deranged amount from my lambda that just adds two numbers. It does generate a sad amount of functions in the ir, hoping its easy enough to inline away. I might want to revisit and see if I can make it compile to something a bit more like rust closures. But anyway first step very easy very nice thank you javalib very cool. 
 
 ## intern const strings (Dec 2)
 
@@ -46,7 +59,9 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
            and you can use the hashes to deduplicate the array at compiletime but runtime still only needs to offset the pointer. 
            *)
 
-its awkward because only the llvm side knows how to allocate a new string object and only the c side knows if its alloacted already. would be easy to reuse the char array object but not the string object. I'd really rather not create new llvm basic blocks.  
+its awkward because only the llvm side knows how to allocate a new string object and only the c side knows if its alloacted already. would be easy to reuse the char array object but not the string object. I'd really rather not create new llvm basic blocks. 
+
+thought it would be hard because you need to generate the constants array at the end when you've seen all the strings but you need to reference it when you're emiting each string but its fine because llvm has a replace_all_uses_with function that lets you just swap out llvalues. 
 
 AAAAAAAAAAA i spent so fucking long on why doing that broke the .equals method and its cause i didnt set the fucking vtable when i moved the init code to the c side so it thought it wasnt an instance of string. 
 
@@ -57,6 +72,7 @@ Uses invokedynamic so generates bytecode at runtime which is not gonna happen.
 
 I think there's a fairly small set used in practice (string concat, lambdas, records) so recognise them in the compiler and just generate call some runtime method. Will be slower than what fancy JIT can do but that's ok. 
 
+It's kinda funny that I can only use java 8 jre currently (which doesn't use invokedynamic for string concat) because I don't know how to use jmod files but I'm using a javac from 17 so it does use invokedynamic but its fine because i couldn't do the dynamic thing anyway so i handle at compile time. 
 
 ## profiling 
 

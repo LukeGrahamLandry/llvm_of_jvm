@@ -11,6 +11,7 @@ struct ObjHeader {
     Vtable* vptr;
 };
 
+// Barely used. Just to make it clear that an ObjHeader can't be assigned to an objptr. 
 struct AnyObject {
     ObjHeader h;
     char data[];  // unsized
@@ -30,10 +31,6 @@ struct InterfaceNode {
     Vtable* root_interface_vptr;
 };
 
-
-// TODO should be ObjHeader* 
-//      but need to figure out how to turn off `warning: incompatible pointer types`
-//      do i really need to cast it every time? 
 typedef AnyObject* objptr;  
 typedef int16_t i16;
 typedef int8_t i8;

@@ -1,7 +1,6 @@
-import java.security.AccessController;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
+import java.util.function.BiFunction;
 
 public class TestObjs {
     int field;
@@ -96,7 +95,6 @@ public class TestObjs {
         d = new ChangeDefault();
         if (d.doop(5) != 25) return 32;
 
-
         //  void java.lang.SecurityManager.checkPermission(java.security.Permission)
         "hi".charAt(0);
 
@@ -120,17 +118,25 @@ public class TestObjs {
         if (!(ab instanceof String)) return 92;
         if (!ab2.equals(ab)) return 35;
 
+        if (!("Hello bob").equals("Hello bob")) return 91;
+        if (!concat("Hello ", "bob").equals("Hello bob")) return 90;
+
+        // TODO: makeconcatwithconstants when one is actually constant
         // if (!sayhi("bob").equals("Hello bob")) return 36;
 
         // Constant strings should be interned, not reallocated. 
         String aa = "a";
         if ("a" != aa) return 37;
         // ie, this should not waste memory
-        // for (int i=0;i<999;i++) {
-        //     var _unused = "lol i really hope im not 999 malloc calls";
-        // }
+        for (int i=0;i<999;i++) {
+            var _unused = "lol i really hope im not 999 malloc calls";
+        }
+
+        BiFunction<Integer, Integer, Integer> func = (fst, snd) -> fst + snd;
+        if (func.apply(10, 5) != 15) return 38;
 
         var l = new ArrayList<>();
+        // I think this relies on the interface_called or vcalled hashmaps that are dependent on ordering 
         // l.add("a");
         // l.add("b");
         // l.add("c");
@@ -139,6 +145,7 @@ public class TestObjs {
         // NOT YET IMPLEMENTED: stack_delta dupX1
         // var vv = "hi".getBytes();
 
+        // TODO: think this needs fixing emit_trap_func to not be order dependent 
         // System.out.println("Hello World!");
         return 0;
     }
@@ -354,10 +361,6 @@ public class TestObjs {
     public static native void thisdoesntexist();
     public static void luckyimnotanentrypoint() {
         thisdoesntexist();
-        var nocompile = new Thread(() -> {
-            System.out.println("You'll never see this.");
-        });
-        nocompile.start();
     }
 
     public void luckyimnotanentrypoint_instance() {

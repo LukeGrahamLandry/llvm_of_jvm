@@ -28,6 +28,11 @@ void assert_instanceof(Vtable* current_vptr, Vtable* target_vptr) {
     }
 }
 
+// sometimes null is allowed but want to guard against thinking i have an object but i forgot to set the vptr.
+void assert_has_vptr_or_null(objptr obj) {
+    assert(obj == NULL || obj->h.vptr != NULL);
+}
+
 typedef struct StringObj StringObj;
 typedef struct StringConst StringConst;
 
@@ -45,6 +50,8 @@ struct StringConst {
     i32 length;
 };
 
+// TODO: since this relies on layout of the string class (java 8) its not going to work on java 17
+// TODO: last 4 arguments could be in a constant struct passed as one or in a named global. 
 StringObj* fill_string_const(StringConst strings[], i32 index, i64 strObjSize, i64 strConstSize, i64 stringValueOffset, Vtable* vptr) {
     assert(index >= 0);
     assert(strConstSize == sizeof(StringConst));
@@ -53,7 +60,7 @@ StringObj* fill_string_const(StringConst strings[], i32 index, i64 strObjSize, i
     i64 offset = ((char*) &test.value) - ((char*) &test);
     assert(offset == stringValueOffset);
 
-    if (strings[index].obj == NULL) {
+    if (strings[index].obj == NULL) {  // first time evaluating this constant
         assert(strings[index].bytes[strings[index].length] == 0);  // Null terminated. dont rely on this but can use it as a sanity check that we got a good pointer
         i32 len = strings[index].length;
         Array_u16* arr = array_init_u16(len);
@@ -61,7 +68,7 @@ StringObj* fill_string_const(StringConst strings[], i32 index, i64 strObjSize, i
             u16 c = strings[index].bytes[i];
             arr->data[i] = c;
         }
-        StringObj* obj = malloc(sizeof(StringObj));
+        StringObj* obj = malloc(sizeof(StringObj));  // Note: this needs to never get garbage collected. 
         obj->value = arr;
         obj->hash = 0;  // Calculated on first use. 
         obj->header.vptr = vptr;  // Forgetting this manifests as .equals failing because it thinks constants are not instanceof String 
@@ -88,6 +95,7 @@ Array_u16* concat_strings(Array_u16* strings[], i32 count) {
     return value;
 }
 
+// TODO: take a toString function pointer so you can log the actual messaage. that gets a bit scary if i dont fix Throwable::<clinit> first
 void log_throw(objptr throwable) {
     printf("Unhandled Exception: object@%p\n", throwable);
     exit(1);
@@ -107,6 +115,12 @@ char* java_lang_Throwable_fillInStackTrace(char* obj, i32 dummy) {
 char* java_lang_Throwable_fillInStackTrace2(char* obj, i32 dummy) {
     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
     return obj;
+}
+
+// referenced from:  _java_lang_Integer__clinit_ 
+objptr java_lang_Class_getPrimitiveClass() {
+    printf("TODO: implement java_lang_Class_getPrimitiveClass\n");
+    exit(1);
 }
 
 void java_lang_Object_registerNatives(){

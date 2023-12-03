@@ -23,6 +23,7 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - Virtual method calls
 - Instanceof checks and object casts
 - Interfaces, abstract methods, and default methods
+- String concatenation, lambdas
 
 ### Incomplete
 

@@ -207,7 +207,7 @@ let rec op_stack_delta op =
     | (OpNeg _) | (OpIInc _) 
     | OpGoto _
     | OpInvalid
-    | (OpNewArray _) | OpArrayLength | (OpGetField _) | (OpInstanceOf _) | (OpCheckCast _)
+    | (OpNewArray _) | OpArrayLength | (OpGetField _) | (OpInstanceOf _) | (OpCheckCast _) | OpNop
     -> 0
 
     | OpThrow -> -1
@@ -399,6 +399,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | FindInterface
 | CheckCast
 | ConcatStrings
+| AssertVptrOrNull
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -418,6 +419,7 @@ let intrinsic_signature ctx op =
         | CheckCast -> "assert_instanceof", [arr_t; arr_t], void_type ctx.context
         | FindInterface -> "resolve_interface_vtable", [arr_t; arr_t], arr_t
         | ConcatStrings -> "concat_strings", [arr_t; i_t], arr_t
+        | AssertVptrOrNull -> "assert_has_vptr_or_null", [arr_t], void_type ctx.context
     in
     (name, args, ret)
 
@@ -480,11 +482,19 @@ let javalanginvokeStringConcatFactory = make_cn "java.lang.invoke.StringConcatFa
 let clinit_ms = make_ms "<clinit>" [] None
 let string_value_field_sign = make_fs "value" (TObject (TArray (TBasic `Char))) 
 
+(* Never call get_class directly, it reloads from disk and reparses every time. 
+   This function generates lambda classes. *)
 let get_class_cached comp cn = 
     match Hashtbl.find_opt comp.class_cache cn with
     | Some c -> c
     | None -> 
         let c = get_class comp.classes cn in
+
+        (* Replace usages of java.lang.invoke.LambdaMetafactory::metafactory *)
+        (* TODO: might want to do this myself instead of trusting the library at some point *)
+        let prefix = safe_cn cn ^ "_lambda" in
+        let (c, generated) = remove_invokedynamics c ~prefix in
+        ClassMap.iter (fun gen_cn gen_c -> Hashtbl.replace comp.class_cache gen_cn gen_c) generated;
         Hashtbl.replace comp.class_cache cn c;
         c
 
@@ -686,14 +696,10 @@ let rec find_vtable ctx comp class_name: vtableinfo =
             in
 
             let prev_vptr = Option.default (const_null ptr_ty) prev in
-
             let interface_vtable = find_vtable ctx comp interface_cn in
-
-            (* TODO: resolve each function in the interface against my concrete class. *)
-            (* let method_signs = MethodMap.filter (fun m -> not (is_static_method m)) interface_cls.i_methods in *)
-            
             let lang_object_vtable = find_vtable ctx comp javalangObject in
 
+            (* resolve each function in the interface against my concrete class. *)
             let vstruct_values = Hashtbl.fold (fun sign value prev -> 
                 let func = match resolve_override comp class_name sign with 
                 | Some target_class -> find_func_inner false ctx comp (make_cms target_class sign)
@@ -706,10 +712,8 @@ let rec find_vtable ctx comp class_name: vtableinfo =
                 ) interface_vtable.fields [(0, lang_object_vtable.value_direct)] 
             in
 
-            
             (* TODO: should really have a consistant way of emitting in the right order instead of these one-liner sorts *)
             let vstruct_values = List.map snd (List.sort (fun (a, _) (b, _) -> compare a b) vstruct_values) in 
-
 
             let iname = safe_cn interface_cn in
             let vtable_value = const_named_struct interface_vtable.ty (Array.of_list vstruct_values) in
@@ -937,10 +941,6 @@ let convert_method ctx code current_cms comp =
 
     let locals = alloc_locals ctx func code current_sign is_static in
     let basic_blocks = init_basic_blocks ctx func block_positions in
-    (*
-    let first = Hashtbl.find basic_blocks 0 in
-    let _ = build_br first ctx.builder in (* jump from stack setup to first instruction *)
-*)
     let do_cast f out s = 
         let v = List.nth s 0 in
         let res = f v (out ctx.context) "" ctx.builder in
@@ -1023,15 +1023,17 @@ let convert_method ctx code current_cms comp =
 
         let { ty=str_struct; vtable; _;} = find_class_lltype ctx comp javalangString in
         let (value_field_offset, _) = get_field_ptr ctx comp (const_null (pointer_type ctx.context)) javalangString string_value_field_sign in
-        fst (call_intin (FillStr) (List.rev [
+        let obj = fst (call_intin (FillStr) (List.rev [
             comp.string_pool; 
             const_int (i32_type ctx.context) str_index; 
             size_of str_struct; 
             size_of comp.string_const_ty;
             build_ptrtoint value_field_offset (i64_type ctx.context) "" ctx.builder;
             vtable.value_ptr;
-            ]))
-        (* TODO: should assert that the result has a vptr *)
+            ])) in 
+        
+        let _ = call_intin AssertVptrOrNull [obj] in (* TODO: have a debug mode flag here beyond just disabling assertions? *)
+        obj
     in
     let emit_const ctx comp (v: jconst): llvalue = 
         match v with
@@ -1189,13 +1191,15 @@ let convert_method ctx code current_cms comp =
 
             let v_func_ptr = vfunc_lookup ctx comp (make_cms interface_cn target_sign) obj_interface_vptr in
             call_method_inner false v_func_ptr target_sign compstack
-
         
         | OpInvoke  ((`Dynamic bs_method), target_sign) -> 
             (match bs_method.bm_ref with
             | `InvokeStatic (`Method (cs, ms)) -> 
                 assert (cn_equal cs javalanginvokeStringConcatFactory);
                 assert (ms_name ms = "makeConcatWithConstants");
+
+                (* TODO: read the argument recipe and deal with constants correctly *)
+                (* eprintf "%s\n" (JPrint.jopcode op); *)
 
                 let args = ms_args target_sign in
                 assert (List.for_all (fun s -> 
@@ -1211,7 +1215,7 @@ let convert_method ctx code current_cms comp =
                 let i32 = i32_type ctx.context in
                 let arr = build_array_alloca str_arr_ty (const_int i32 arg_count) "" ctx.builder in
                 
-                List.iteri (fun i s -> 
+                List.iteri (fun i s -> (* TODO: null check *)
                     let (value_field_ptr, _) = get_field_ptr ctx comp s javalangString string_value_field_sign in
                     let value_arr = build_load ptr_ty value_field_ptr "" ctx.builder in
                     
@@ -1229,8 +1233,6 @@ let convert_method ctx code current_cms comp =
             | _ -> todo "more general invoke dynamic"
             )
             
-            
-
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
             make_new_uninit classname :: compstack
         
@@ -1260,9 +1262,11 @@ let convert_method ctx code current_cms comp =
             ) in
             let target_vptr = (find_vtable ctx comp target_class).value_ptr in
 
-            let vptr_field_ptr = List.hd compstack in  (* TODO: this relies on vtable being first field *)
+            let obj = List.hd compstack in 
+            let vptr_field_ptr = obj in (* TODO: this relies on vtable being first field *)
             let current_vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
 
+            let _ = call_intin AssertVptrOrNull [obj] in
             let (result, _) = call_intin InstCheck [target_vptr; current_vptr] in
             result :: drop_fst compstack
             
@@ -1273,8 +1277,10 @@ let convert_method ctx code current_cms comp =
             ) in
             let target_vptr = (find_vtable ctx comp target_class).value_ptr in
 
-            let vptr_field_ptr = List.hd compstack in  (* TODO: this relies on vtable being first field *)
+            let obj = List.hd compstack in
+            let vptr_field_ptr = obj in  (* TODO: this relies on vtable being first field *)
             let current_vptr = build_load (pointer_type ctx.context) vptr_field_ptr "vptr" ctx.builder in
+            let _ = call_intin AssertVptrOrNull [obj] in
             let _ = call_intin CheckCast [target_vptr; current_vptr] in
             compstack
 
@@ -1462,7 +1468,7 @@ let () =
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)
     let reference_all name =
-        let cls = get_class classes (make_cn name) in
+        let cls = get_class_cached comp (make_cn name) in
         let methods = MethodMap.filter is_static_method (get_methods cls) in
         MethodMap.iter (fun ms _ -> 
             let _ = find_func ctx comp (make_cms (make_cn name) ms) in
