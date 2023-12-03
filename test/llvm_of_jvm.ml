@@ -56,7 +56,7 @@ let () =
 	run "javac test/java/*.java out/java/*.java";
 
 	run ("./_build/default/bin/main.exe " ^ classes ^ " > out/test.ll");
-	run "gcc -O0 -g test/entry.c out/test.ll runtime/runtime.c -o out/testbin";
+	run "gcc -O2 test/entry.c out/test.ll runtime/runtime.c -o out/testbin";
 	(* run things twice just to see times because first run after compiling is much slower *)
 	run "./out/testbin";
 	run "./out/testbin";

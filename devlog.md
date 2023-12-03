@@ -48,12 +48,15 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 
 its awkward because only the llvm side knows how to allocate a new string object and only the c side knows if its alloacted already. would be easy to reuse the char array object but not the string object. I'd really rather not create new llvm basic blocks.  
 
+AAAAAAAAAAA i spent so fucking long on why doing that broke the .equals method and its cause i didnt set the fucking vtable when i moved the init code to the c side so it thought it wasnt an instance of string. 
+
 ## string concatenation (Dec 2)
 
 Uses invokedynamic so generates bytecode at runtime which is not gonna happen. 
 - https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/lang/invoke/StringConcatFactory.java#L326
 
 I think there's a fairly small set used in practice (string concat, lambdas, records) so recognise them in the compiler and just generate call some runtime method. Will be slower than what fancy JIT can do but that's ok. 
+
 
 ## profiling 
 

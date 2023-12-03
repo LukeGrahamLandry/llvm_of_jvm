@@ -412,7 +412,7 @@ let intrinsic_signature ctx op =
         | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
         | ArrLen -> "array_length", [arr_t], i_t
         | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
-        | FillStr -> "fill_string_const", [arr_t; i_t; i64_t; i64_t; i64_t;], arr_t
+        | FillStr -> "fill_string_const", [arr_t; i_t; i64_t; i64_t; i64_t; arr_t;], arr_t
         | LogThrow -> "log_throw", [arr_t], void_type ctx.context
         | InstCheck -> "check_instanceof", [arr_t; arr_t], i1_type ctx.context
         | CheckCast -> "assert_instanceof", [arr_t; arr_t], void_type ctx.context
@@ -1021,7 +1021,7 @@ let convert_method ctx code current_cms comp =
             i
         in
 
-        let { ty=str_struct; _; } = find_class_lltype ctx comp javalangString in
+        let { ty=str_struct; vtable; _;} = find_class_lltype ctx comp javalangString in
         let (value_field_offset, _) = get_field_ptr ctx comp (const_null (pointer_type ctx.context)) javalangString string_value_field_sign in
         fst (call_intin (FillStr) (List.rev [
             comp.string_pool; 
@@ -1029,7 +1029,9 @@ let convert_method ctx code current_cms comp =
             size_of str_struct; 
             size_of comp.string_const_ty;
             build_ptrtoint value_field_offset (i64_type ctx.context) "" ctx.builder;
+            vtable.value_ptr;
             ]))
+        (* TODO: should assert that the result has a vptr *)
     in
     let emit_const ctx comp (v: jconst): llvalue = 
         match v with

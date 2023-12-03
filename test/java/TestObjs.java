@@ -110,7 +110,15 @@ public class TestObjs {
         if (!ab.equals("ab")) return 34;
         var ab2 = concat("a", "b");
         concat(ab2, "ab");
-        if (!ab2.equals("ab")) return 35;
+        if (ab2 == ab) return 99;
+        if (ab2.length() != ab.length()) return 98;
+        if (ab.charAt(0) != ab2.charAt(0)) return 97;
+        if (ab.charAt(1) != ab2.charAt(1)) return 96;
+        if (ab2.length() != 2) return 95;
+        if (!("const has vtable?" instanceof String)) return 94;
+        if (!(ab2 instanceof String)) return 93;
+        if (!(ab instanceof String)) return 92;
+        if (!ab2.equals(ab)) return 35;
 
         // if (!sayhi("bob").equals("Hello bob")) return 36;
 
@@ -134,8 +142,6 @@ public class TestObjs {
         // System.out.println("Hello World!");
         return 0;
     }
-
-    static native void slow_log_jstr(char[] s);
 
     static String concat(String a, String b) {
         return a + b;

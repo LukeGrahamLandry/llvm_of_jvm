@@ -35,6 +35,7 @@ i32 array_length(AnyArray* arr) {
         ty data[];              \
     } Array_##ty;               \
     \
+    /* TODO: need to set v-ptr */\
     Array_##ty* array_init_##ty (i32 length) {                      \
         assert(length >= 0);                                        \
         size_t bytes = sizeof(Array_##ty) + (length * sizeof(ty));  \
@@ -94,29 +95,9 @@ generic_array(i64, 6)
 generic_array(f32, 7)
 generic_array(f64, 8)
 
-void log_throw(objptr throwable) {
-    printf("Unhandled Exception: object@%p\n", throwable);
+void java_lang_System_arraycopy(objptr src, i32 srcPos, objptr dest, i32 destPos, i32 length) {
+    printf("TODO: implement java_lang_system_arraycopy!\n");
     exit(1);
-}
-
-// TODO: fragile because if you dont seem to call a native method it emits an empty body for you so cant define 
-// TODO: do this properly 
-// char* java_lang_Throwable_fillInStackTrace(char* obj, i32 dummy) {
-//     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
-//     return obj;
-// }
-// char* java_lang_Throwable_fillInStackTrace1(char* obj, i32 dummy) {
-//     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
-//     return obj;
-// }
-// TODO: i highly distrust my name mangling
-char* java_lang_Throwable_fillInStackTrace2(char* obj, i32 dummy) {
-    printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
-    return obj;
-}
-
-void java_lang_Object_registerNatives(){
-
 }
 
 #undef generic_array
