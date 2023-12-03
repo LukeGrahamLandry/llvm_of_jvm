@@ -99,18 +99,34 @@ public class TestObjs {
 
         //  void java.lang.SecurityManager.checkPermission(java.security.Permission)
         "hi".charAt(0);
+
+        // TODO: need to use the right type for non-int comparison 
         // if ("hi".charAt(0) !='h') return 31;
 
         var ul = Collections.unmodifiableList(al);
 
+        if (!"ab".equals("ab")) return 33;
         var ab = "a" + "b";
-        if (!ab.equals("ab")) return 33;
+        if (!ab.equals("ab")) return 34;
         var ab2 = concat("a", "b");
-        if (!ab2.equals("ab")) return 34;
+        concat(ab2, "ab");
+        if (!ab2.equals("ab")) return 35;
 
-        // oh shit
-        // NOT YET IMPLEMENTED: stack_delta invokedynamic makeConcatWithConstants:(Ljava/lang/String;)Ljava/lang/String;\n\t method_ref {\n\t   method-handle : invokestatic, method : java.lang.invoke.CallSite java.lang.invoke.StringConcatFactory::makeConcatWithConstants(java.lang.invoke.MethodHandles$Lookup,java.lang.String,java.lang.invoke.MethodType,java.lang.String,java.lang.Object[])\n\t }\n\t bootstrap_arguments {\n\t   string 'Hello \\001'\n\t 
-        // sayhi("bob");
+        // if (!sayhi("bob").equals("Hello bob")) return 36;
+
+        // Constant strings should be interned, not reallocated. 
+        String aa = "a";
+        if ("a" != aa) return 37;
+        // ie, this should not waste memory
+        // for (int i=0;i<999;i++) {
+        //     var _unused = "lol i really hope im not 999 malloc calls";
+        // }
+
+        var l = new ArrayList<>();
+        // l.add("a");
+        // l.add("b");
+        // l.add("c");
+        // if (!l.get(0).equals("a")) return 35;
 
         // NOT YET IMPLEMENTED: stack_delta dupX1
         // var vv = "hi".getBytes();
@@ -118,6 +134,8 @@ public class TestObjs {
         // System.out.println("Hello World!");
         return 0;
     }
+
+    static native void slow_log_jstr(char[] s);
 
     static String concat(String a, String b) {
         return a + b;

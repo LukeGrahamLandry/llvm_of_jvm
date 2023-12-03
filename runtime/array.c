@@ -101,10 +101,10 @@ void log_throw(objptr throwable) {
 
 // TODO: fragile because if you dont seem to call a native method it emits an empty body for you so cant define 
 // TODO: do this properly 
-char* java_lang_Throwable_fillInStackTrace(char* obj, i32 dummy) {
-    printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
-    return obj;
-}
+// char* java_lang_Throwable_fillInStackTrace(char* obj, i32 dummy) {
+//     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
+//     return obj;
+// }
 // char* java_lang_Throwable_fillInStackTrace1(char* obj, i32 dummy) {
 //     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
 //     return obj;
@@ -117,11 +117,6 @@ char* java_lang_Throwable_fillInStackTrace2(char* obj, i32 dummy) {
 
 void java_lang_Object_registerNatives(){
 
-}
-
-void java_lang_System_arraycopy(objptr src, i32 srcPos, objptr dest, i32 destPos, i32 length) {
-    printf("TODO: implement java_lang_system_arraycopy!\n"); 
-    exit(1);
 }
 
 #undef generic_array

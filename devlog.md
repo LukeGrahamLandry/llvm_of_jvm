@@ -33,10 +33,27 @@ https://github.com/openjdk/jdk/tree/master/test/jdk/java
 
 the ones in `lang` at least seem orgnaised into little programs with a main method which is very helpful. 
 
-- init exceptions (dont need to catch)
-- string concatenation 
+- use newer jre (jmod files)
 - standalone program from main(String...) 
 
+## intern const strings (Dec 2)
+
+(* always use the same object for a given string instead of reallocating every time the literal is evaluated. 
+           maybe global intern table and emit a call to like rt_get_string_const(index) 
+           then you have { values: [n] char*, objects: [n] objptr } 
+           if objects[i] == null then objects[i] = fill_str(new_uninit, values[i])
+           return objects[i] so its always a null check and a lookup but you only allocate once
+           and you can use the hashes to deduplicate the array at compiletime but runtime still only needs to offset the pointer. 
+           *)
+
+its awkward because only the llvm side knows how to allocate a new string object and only the c side knows if its alloacted already. would be easy to reuse the char array object but not the string object. I'd really rather not create new llvm basic blocks.  
+
+## string concatenation (Dec 2)
+
+Uses invokedynamic so generates bytecode at runtime which is not gonna happen. 
+- https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/lang/invoke/StringConcatFactory.java#L326
+
+I think there's a fairly small set used in practice (string concat, lambdas, records) so recognise them in the compiler and just generate call some runtime method. Will be slower than what fancy JIT can do but that's ok. 
 
 ## profiling 
 
@@ -86,8 +103,6 @@ specifying rt.jar instead of the whole lib folder shaves off another ~5ms but th
 Now most time is in _caml_ml_input_char. 
 
 So ~17x faster overall from this adventure. 
-
-
 
 ## interface virtually_called (Dec 1)
 

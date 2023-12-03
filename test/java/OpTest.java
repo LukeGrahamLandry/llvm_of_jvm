@@ -70,6 +70,7 @@ public class OpTest {
         return d / b;
     }
 
+    // TODO: see strange_ternary_crash
     // public static int fcmp_ternary(float a, float b) {
     //     int c = 0;
     //     c += a == b ? 1 : 0;
@@ -78,6 +79,30 @@ public class OpTest {
     //     c += a <= b ? -1 : 0;
     //     c += a >= b ? 1 : 0;
     //     return c;
+    // }
+
+
+    // public static int strange_ternary_crash(int);
+    // Code:
+    //    0: iconst_0
+    //    1: istore_1
+    //    2: iload_1
+    //    3: iload_0
+    //    4: iconst_1
+    //    5: if_icmple     12
+    //    8: iconst_2
+    //    9: goto          13
+    //   12: iconst_3
+    //   13: iadd
+    //   14: istore_1
+    //   15: iload_1
+    //   16: ireturn
+    // This wants you to be able to flow from previous stack. 
+    // TODO: fcmp_ternary still doesn't work because of this
+    // public static int strange_ternary_crash(int a) {
+    //     int b = 0;
+    //     b += a > 1 ? 2 : 3;
+    //     return b;
     // }
 
     public static float ffmax(float a, float b) {

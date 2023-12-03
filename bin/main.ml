@@ -404,6 +404,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 let intrinsic_signature ctx op = 
     let arr_t = pointer_type ctx.context in
     let i_t = i32_type ctx.context in
+    let i64_t = i64_type ctx.context in
 
     let (name, args, ret) = match op with
         | ArrInit ty -> "array_init_" ^ (ctype_name ty), [i_t], arr_t
@@ -411,7 +412,7 @@ let intrinsic_signature ctx op =
         | ArrSet ty -> "array_set_" ^ (ctype_name ty), [arr_t; i_t; lltype_of_arrtype ctx ty], void_type ctx.context
         | ArrLen -> "array_length", [arr_t], i_t
         | ArrFillMulti ty -> "array_fillmulti_" ^ (ctype_name ty), [i_t; arr_t; i_t], arr_t
-        | FillStr -> "fill_string_const", [arr_t; arr_t], void_type ctx.context
+        | FillStr -> "fill_string_const", [arr_t; i_t; i64_t; i64_t; i64_t;], arr_t
         | LogThrow -> "log_throw", [arr_t], void_type ctx.context
         | InstCheck -> "check_instanceof", [arr_t; arr_t], i1_type ctx.context
         | CheckCast -> "assert_instanceof", [arr_t; arr_t], void_type ctx.context
@@ -466,6 +467,9 @@ type compilation = {
     wip_vtable_memo: (class_name, vtableinfo) Hashtbl.t;
     interface_called: (class_method_signature, unit) Hashtbl.t;
     class_cache: (class_name, jcode interface_or_class) Hashtbl.t;
+    const_strings: (string, int * llvalue) Hashtbl.t;
+    string_const_ty: lltype;
+    string_pool: llvalue;
 }
 
 let javalangObject = make_cn "java.lang.Object"
@@ -971,7 +975,12 @@ let convert_method ctx code current_cms comp =
     in
     let call_maybe_virtual classname target_sign compstack = 
         let obj_cls = get_class_cached comp classname in
-        let overriding_class = Option.get (resolve_override comp classname target_sign) in
+        let overriding_class = match resolve_override comp classname target_sign with 
+        | Some c -> c 
+        | None -> 
+            todo ("None resolve_override of " ^ (JPrint.class_method_signature (make_cms classname target_sign)));
+    
+        in
         let m = get_method (get_class_cached comp overriding_class) target_sign in
 
         if is_final_method m || is_final obj_cls then (* nobody can override OR nobody past us can override *)
@@ -996,30 +1005,31 @@ let convert_method ctx code current_cms comp =
         obj
     in
     let emit_string_obj ctx comp s = 
-        (* TODO: always use the same object for a given string instead of reallocating every time the literal is evaluated. 
-           maybe global intern table and emit a call to like rt_get_string_const(index) 
-           then you have { values: [n] char*, objects: [n] objptr } 
-           if objects[i] == null then objects[i] = fill_str(new_uninit, values[i])
-           return objects[i] so its always a null check and a lookup but you only allocate once
-           and you can use the hashes to deduplicate the array at compiletime but runtime still only needs to offset the pointer. 
-           *)
-        (* TODO: do i need to deal with the modified utf8 thing? set the coder field or turn off compact strings (former pls) 
+        let str_index = match Hashtbl.find_opt comp.const_strings s with 
+        | Some (i, _) -> i
+        | None -> 
+            (* TODO: do i need to deal with the modified utf8 thing? set the coder field or turn off compact strings (former pls) 
            tho it being a static field that only gets set in clinit means llvm can't constant fold it. should be a special case because strings are kinda important *)
-        let len = String.length s in
-        let len = const_int (i32_type ctx.context) len in
-        let data = const_stringz ctx.context s in
-        let data = define_global "str" data ctx.the_module in
-        set_global_constant true data;
-        let str_cls = javalangString in
-        let obj = make_new_uninit str_cls in
+            let len = String.length s in
+            let len = const_int (i32_type ctx.context) len in
+            let data = const_stringz ctx.context s in
+            let data = define_global "str" data ctx.the_module in
+            set_global_constant true data;
+            let i = Hashtbl.length comp.const_strings in 
+            let conststr = const_struct ctx.context (Array.of_list [data; const_null (pointer_type ctx.context); len]) in
+            Hashtbl.replace comp.const_strings s (i, conststr);
+            i
+        in
 
-        let chars_array = fst (call_intin (ArrInit (arraytype_of_valuetype (TBasic `Char))) [len]) in
-
-        let (value_field_ptr, _) = get_field_ptr ctx comp obj str_cls string_value_field_sign in
-        let _ = build_store chars_array value_field_ptr ctx.builder in
-
-        let _ = fst (call_intin (FillStr) [data; chars_array; ]) in
-        obj
+        let { ty=str_struct; _; } = find_class_lltype ctx comp javalangString in
+        let (value_field_offset, _) = get_field_ptr ctx comp (const_null (pointer_type ctx.context)) javalangString string_value_field_sign in
+        fst (call_intin (FillStr) (List.rev [
+            comp.string_pool; 
+            const_int (i32_type ctx.context) str_index; 
+            size_of str_struct; 
+            size_of comp.string_const_ty;
+            build_ptrtoint value_field_offset (i64_type ctx.context) "" ctx.builder;
+            ]))
     in
     let emit_const ctx comp (v: jconst): llvalue = 
         match v with
@@ -1428,6 +1438,8 @@ let () =
 
     let c = create_context () in
     let ctx = { context = c; the_module = create_module c "javatest"; builder = builder c } in
+    let string_const_ty = named_struct_type ctx.context "StringConst" in
+    struct_set_body string_const_ty (Array.of_list [(pointer_type ctx.context); (pointer_type ctx.context); (i32_type ctx.context)]) false;
     let comp = { 
         classes;
         intrinsics = Hashtbl.create 0; 
@@ -1441,6 +1453,9 @@ let () =
         wip_vtable_memo = Hashtbl.create 0;
         interface_called = Hashtbl.create 0;
         class_cache = Hashtbl.create 0;
+        const_strings = Hashtbl.create 0;
+        string_const_ty;
+        string_pool = define_global "WipConstStringPool" (const_null (pointer_type ctx.context)) ctx.the_module;
     } in
 
     (* Treat all static methods in the class <name> as roots. TODO: ugly *)
@@ -1508,6 +1523,14 @@ let () =
             emit_trap_func ()
     in
     emit_trap_func ();
+
+    let _count = Hashtbl.length comp.const_strings in
+    let strings = List.of_seq (Hashtbl.to_seq comp.const_strings) in
+    let strings = List.sort (fun (_, (a, _)) (_, (b, _)) -> compare a b) strings in
+    let strings = List.map (fun (_, (_, v)) -> v) strings in
+    let strings = const_array comp.string_const_ty (Array.of_list strings) in
+    let strings = define_global "ConstStringPool" strings ctx.the_module in
+    replace_all_uses_with comp.string_pool strings;
 
     let code = string_of_llmodule ctx.the_module in
     print_endline code;
