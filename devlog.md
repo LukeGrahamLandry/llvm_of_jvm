@@ -8,6 +8,7 @@ opam install dune
 opam install javalib
 opam install llvm
 dune build
+opam install ocaml-lsp-server
 ```
 
 the flambda really doesnt matter if most of my time is in gc, mem_cmp, and llvm.  

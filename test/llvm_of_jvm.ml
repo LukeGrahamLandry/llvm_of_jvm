@@ -44,6 +44,10 @@ let do_templates () =
     classes
 
 let () = 
+    assert (Sys.file_exists "./test/llvm_of_jvm.ml");  (* must run in correct working directory *)
+    if not (Sys.file_exists "./out/java") then run "mkdir -p out/java";
+	if not (Sys.file_exists "./out/skiptime.o") then run "gcc -c skiptime.c -o out/skiptime.o";
+
 	(* run "dune build"; want to have `dune build --watch` anyway *)
 	(* TODO: This is ugly. Need to tell it which entry points to convert. Eventually just start at main? *)
 	let classes = "OpTest" :: do_templates () in

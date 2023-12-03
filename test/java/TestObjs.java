@@ -104,7 +104,9 @@ public class TestObjs {
         var ul = Collections.unmodifiableList(al);
 
         var ab = "a" + "b";
-        // var ab2 = concat("a", "b");
+        if (!ab.equals("ab")) return 33;
+        var ab2 = concat("a", "b");
+        if (!ab2.equals("ab")) return 34;
 
         // oh shit
         // NOT YET IMPLEMENTED: stack_delta invokedynamic makeConcatWithConstants:(Ljava/lang/String;)Ljava/lang/String;\n\t method_ref {\n\t   method-handle : invokestatic, method : java.lang.invoke.CallSite java.lang.invoke.StringConcatFactory::makeConcatWithConstants(java.lang.invoke.MethodHandles$Lookup,java.lang.String,java.lang.invoke.MethodType,java.lang.String,java.lang.Object[])\n\t }\n\t bootstrap_arguments {\n\t   string 'Hello \\001'\n\t 

@@ -228,6 +228,10 @@ let rec op_stack_delta op =
         let ret = if (ms_rtype sign) == None then 0 else 1 in
         -1 + ret - List.length (ms_args sign)
 
+    | OpInvoke ((`Dynamic _), sign) ->
+        let ret = if (ms_rtype sign) == None then 0 else 1 in
+        ret - List.length (ms_args sign)
+
     | _ -> todo ("stack_delta " ^ (JPrint.jopcode op))
 
 
@@ -394,6 +398,7 @@ type rt_intrinsic = (* Represents a callable function in runtime.c *)
 | InstCheck
 | FindInterface
 | CheckCast
+| ConcatStrings
 
 (* Any changes in runtime.c must be reflected here. *)
 let intrinsic_signature ctx op = 
@@ -411,6 +416,7 @@ let intrinsic_signature ctx op =
         | InstCheck -> "check_instanceof", [arr_t; arr_t], i1_type ctx.context
         | CheckCast -> "assert_instanceof", [arr_t; arr_t], void_type ctx.context
         | FindInterface -> "resolve_interface_vtable", [arr_t; arr_t], arr_t
+        | ConcatStrings -> "concat_strings", [arr_t; i_t], arr_t
     in
     (name, args, ret)
 
@@ -465,6 +471,7 @@ type compilation = {
 let javalangObject = make_cn "java.lang.Object"
 let javalangThrowable = make_cn "java.lang.Throwable"
 let javalangString = make_cn "java.lang.String"
+let javalanginvokeStringConcatFactory = make_cn "java.lang.invoke.StringConcatFactory"
 
 let clinit_ms = make_ms "<clinit>" [] None
 let string_value_field_sign = make_fs "value" (TObject (TArray (TBasic `Char))) 
@@ -1170,6 +1177,47 @@ let convert_method ctx code current_cms comp =
 
             let v_func_ptr = vfunc_lookup ctx comp (make_cms interface_cn target_sign) obj_interface_vptr in
             call_method_inner false v_func_ptr target_sign compstack
+
+        
+        | OpInvoke  ((`Dynamic bs_method), target_sign) -> 
+            (match bs_method.bm_ref with
+            | `InvokeStatic (`Method (cs, ms)) -> 
+                assert (cn_equal cs javalanginvokeStringConcatFactory);
+                assert (ms_name ms = "makeConcatWithConstants");
+
+                let args = ms_args target_sign in
+                assert (List.for_all (fun s -> 
+                    match s with
+                    | TObject (TClass cn) -> cn_equal cn javalangString
+                    | _ -> false
+                ) args); 
+                let arg_count = List.length args in
+                let (stack, strings) = pop_n compstack arg_count in
+
+                let ptr_ty = pointer_type ctx.context in
+                let str_arr_ty = array_type ptr_ty arg_count in
+                let i32 = i32_type ctx.context in
+                let arr = build_array_alloca str_arr_ty (const_int i32 arg_count) "" ctx.builder in
+                
+                List.iteri (fun i s -> 
+                    let (value_field_ptr, _) = get_field_ptr ctx comp s javalangString string_value_field_sign in
+                    let value_arr = build_load ptr_ty value_field_ptr "" ctx.builder in
+                    
+                    let slot = build_gep str_arr_ty arr (Array.of_list [const_int i32 0; const_int i32 i;]) "" ctx.builder in
+                    let _ = build_store value_arr slot ctx.builder in
+                    ()
+                ) strings;
+
+                let result_value_arr = fst (call_intin ConcatStrings [ const_int i32 arg_count; arr; ]) in
+                let obj = make_new_uninit javalangString in
+                let (value_field_ptr, _) = get_field_ptr ctx comp obj javalangString string_value_field_sign in
+                let _ = build_store result_value_arr value_field_ptr ctx.builder in
+                
+                obj :: stack
+            | _ -> todo "more general invoke dynamic"
+            )
+            
+            
 
         | OpNew classname -> (* TODO: call an intrinsic to register it with the garbage collector. *)
             make_new_uninit classname :: compstack

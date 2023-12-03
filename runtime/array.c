@@ -83,24 +83,16 @@ i32 array_length(AnyArray* arr) {
     }                                                                                   \
 
 #define OBJ_TYPE_ID 1
+#define CHAR_TYPE_ID 4
 
 generic_array(objptr, OBJ_TYPE_ID)
 generic_array(i8, 2)
 generic_array(i16, 3)
-generic_array(u16, 4)
+generic_array(u16, CHAR_TYPE_ID)
 generic_array(i32, 5)
 generic_array(i64, 6)
 generic_array(f32, 7)
 generic_array(f64, 8)
-
-
-void fill_string_const(Array_u16* arr, char* bytes) {
-    i32 len = array_length((AnyArray*) arr);
-    for (i32 i=0;i<len;i++) {
-        u16 c = bytes[i];
-        array_set_u16(arr, i, c);
-    }
-}
 
 void log_throw(objptr throwable) {
     printf("Unhandled Exception: object@%p\n", throwable);
@@ -133,7 +125,3 @@ void java_lang_System_arraycopy(objptr src, i32 srcPos, objptr dest, i32 destPos
 }
 
 #undef generic_array
-#undef OBJ_TYPE_ID
-#undef NULL_CHK
-#undef DEBUG_CANARY
-#undef DEBUG_CHK
