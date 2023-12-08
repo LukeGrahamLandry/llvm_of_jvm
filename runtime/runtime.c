@@ -103,6 +103,7 @@ void log_throw(objptr throwable) {
 
 // TODO: fragile because if you dont seem to call a native method it emits an empty body for you so cant define 
 // TODO: do this properly 
+// TODO: really need to fix this its such a pain in the ass
 char* java_lang_Throwable_fillInStackTrace(char* obj, i32 dummy) {
     printf("Called java_lang_Throwable_fillInStackTrace1 (this is very very bad)\n");
     return obj;

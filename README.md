@@ -9,6 +9,8 @@ See [devlog.md](devlog.md) (reverse chronological order) if interested in far to
 
 The only garbage collection strategy so far is a reimplementation of the JDK's [Epsilon GC](https://blogs.oracle.com/javamagazine/post/epsilon-the-jdks-do-nothing-garbage-collector) ...what I'm saying is we just never free anything. That's good enough for short lived programs. 
 
+Pipeline: `.java src -> [javac] -> .class bytecode -> [llvm_of_jvm] -> .ll text ir -> [clang] -> native exe`
+
 ## Implemented 
 
 - Math on all primitive types (+, -, *, =, %)
@@ -38,7 +40,7 @@ The only garbage collection strategy so far is a reimplementation of the JDK's [
 - interface method calls require traversing a linked list
 - actually handle locks for syncronised blocks
 - try/catch blocks
-
+- some stack operations that depend on runtime control flow won't compile. 
 
 ## Libraries Used 
 

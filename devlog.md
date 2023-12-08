@@ -7,11 +7,10 @@ eval $(opam env --set-switch)
 opam install dune
 opam install javalib
 opam install llvm
-dune build
 opam install ocaml-lsp-server
+dune build --watch
+./_build/default/test/llvm_of_jvm.exe
 ```
-
-the flambda really doesnt matter if most of my time is in gc, mem_cmp, and llvm.  
 
 ## note: common problems
 
@@ -45,6 +44,10 @@ the ones in `lang` at least seem orgnaised into little programs with a main meth
 - use newer jre (jmod files)
 - standalone program from main(String...) 
 
+## more profiling 
+
+xcode has a disk activity profiler. learned im reading rt.jar 27 times for a total of 12ms-6ms (depending on cache?) but not reading the whole thing every time at least unless im misinterpreting the bytes column. 
+
 ## lambdas (Dec 3)
 
 Turns out javalib has a function to replace the invokedynamic of LambdaMetafactory::metafactory (tho its somewhat misleadingly called remove_invokedynamics as though it did all of them). It generates a class that implements the right functional interface for you, very convient. Intereseting that they can handle that for me but not string concatenation, maybe this was made for java 8? I can just call that on every class I load. TODO: should only do it for reachable methods so call remove_invokedynamics_in_method in emit_method instead. Current system makes it like 20% slower but also its compiling ~3000 bytecode instructions instead of ~2000 so I'm hoping it just increased the web of lib functions it reaches not that its generating a deranged amount from my lambda that just adds two numbers. It does generate a sad amount of functions in the ir, hoping its easy enough to inline away. I might want to revisit and see if I can make it compile to something a bit more like rust closures. But anyway first step very easy very nice thank you javalib very cool. 
@@ -64,6 +67,8 @@ its awkward because only the llvm side knows how to allocate a new string object
 thought it would be hard because you need to generate the constants array at the end when you've seen all the strings but you need to reference it when you're emiting each string but its fine because llvm has a replace_all_uses_with function that lets you just swap out llvalues. 
 
 AAAAAAAAAAA i spent so fucking long on why doing that broke the .equals method and its cause i didnt set the fucking vtable when i moved the init code to the c side so it thought it wasnt an instance of string. 
+
+TODO: should really just emit the const strings with the right layout for string objects so don't need to malloc and copy over data even once. 
 
 ## string concatenation (Dec 2)
 

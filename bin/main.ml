@@ -1489,50 +1489,53 @@ let () =
     emit_next ();
     assert (Hashtbl.length comp.func_queue == 0);
     
+    (* Queue and emit any methods called indirectly. 
+       The end state must have funcs_vtabled be empty, with everything either correctly compiled or emitted as unreachable. *)
     let rec emit_trap_func () = 
-        match take_any comp.funcs_vtabled with
-        | None -> ()
-        | Some (cms, func) -> 
-            Hashtbl.remove comp.funcs_vtabled cms;
+        (* Note how many we need to do, if the number changes, one of these methods did a new indirect call. 
+           You never remove things from these tables. *)
+        let count_virtually_called = Hashtbl.length comp.virtually_called in
+        let count_interface_called = Hashtbl.length comp.interface_called in
+
+        (* Copy the current list to track iteration progress without losing anything. 
+           If something vtabled doesn't need to be emitted this pass, it can't be emitted as 
+           unreachable yet because a future pass might need it. *)
+        let vtabled = List.of_seq (Hashtbl.to_seq comp.funcs_vtabled) in
+
+        let maybe_emit (cms, _) =
             let (cs, ms) = cms_split cms in
-            let _ = match find_interface_declaration comp cs ms with 
+            let called = match find_interface_declaration comp cs ms with 
             | Some interface -> 
-                let called = not ((Hashtbl.find_opt comp.interface_called (make_cms interface ms)) = None) in
-                if called then(
-                    Hashtbl.replace comp.func_queue cms func;
-                    emit_next ()) (* TODO: like below, this might call more interfaces or virtuals that you already emited traps*)
-                else (
-                    (* eprintf "WARNING: emit unreachable method stub for [%s] extends [%s] %b\n" (JPrint.class_method_signature cms) (JPrint.class_method_signature base_method) has_vcall; *)
-                    let entry = append_block ctx.context "entry_trap_i" func in 
-                    position_at_end entry ctx.builder;
-                    let _ = build_unreachable ctx.builder in
-                    ()
-                )
+                (* <func> is the implementation of <interface> on some class and is in its vtable. 
+                   If its ever called through the interface, need to emit it. *)
+               not ((Hashtbl.find_opt comp.interface_called (make_cms interface ms)) = None)
             | None -> 
                 let base_method = find_base_declaration comp cs ms in
                 let base_method = (make_cms base_method ms) in
-                let has_vcall = not (Hashtbl.find_opt comp.virtually_called base_method == None) in (* TODO: this needs to include invokeinterface *)
-                if has_vcall then (
-                    let vcalls = Hashtbl.length comp.virtually_called in
-                    Hashtbl.replace comp.func_queue cms func;
-                    emit_next ();
-                    (* TODO: the method you just did might have added things to virtually_called that you already emitted a trap for *)
-                    assert (vcalls == Hashtbl.length comp.virtually_called);
-                    ()
-                ) else (
-                    (* eprintf "WARNING: emit unreachable method stub for [%s] extends [%s] %b\n" (JPrint.class_method_signature cms) (JPrint.class_method_signature base_method) has_vcall; *)
-                    let entry = append_block ctx.context "entry_trap_c" func in 
-                    position_at_end entry ctx.builder;
-                    let _ = build_unreachable ctx.builder in
-                    ()
-                )
+                not (Hashtbl.find_opt comp.virtually_called base_method == None)
             in
+            if called then 
+                let _ = find_func ctx comp cms in
+                    emit_next ()
+        in
 
-            emit_trap_func ()
+        List.iter maybe_emit vtabled;
+
+        let canStop = (count_virtually_called == Hashtbl.length comp.virtually_called) && (count_interface_called == Hashtbl.length comp.interface_called) in
+        if not canStop then emit_trap_func ();
+        
     in
     emit_trap_func ();
 
-    let _count = Hashtbl.length comp.const_strings in
+
+    let emit_unrechable_body _ func = 
+        let entry = append_block ctx.context "entry_trap" func in 
+        position_at_end entry ctx.builder;
+        let _ = build_unreachable ctx.builder in
+        ()
+    in
+    Hashtbl.iter emit_unrechable_body comp.funcs_vtabled;
+
     let strings = List.of_seq (Hashtbl.to_seq comp.const_strings) in
     let strings = List.sort (fun (_, (a, _)) (_, (b, _)) -> compare a b) strings in
     let strings = List.map (fun (_, (_, v)) -> v) strings in

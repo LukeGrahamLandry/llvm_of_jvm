@@ -135,20 +135,27 @@ public class TestObjs {
         BiFunction<Integer, Integer, Integer> func = (fst, snd) -> fst + snd;
         if (func.apply(10, 5) != 15) return 38;
 
-        var l = new ArrayList<>();
-        // I think this relies on the interface_called or vcalled hashmaps that are dependent on ordering 
-        // l.add("a");
-        // l.add("b");
-        // l.add("c");
+        var l = new ArrayList<>(); 
+        l.add("a");
+        l.add("b");
+        l.add("c");
+        // TODO: borked idk
         // if (!l.get(0).equals("a")) return 35;
 
         // NOT YET IMPLEMENTED: stack_delta dupX1
         // var vv = "hi".getBytes();
 
-        // TODO: think this needs fixing emit_trap_func to not be order dependent 
+        // TODO: NOT YET IMPLEMENTED: what's a char?
         // System.out.println("Hello World!");
+
+        // TODO: records
+        // var p = new Point(1, 2);
         return 0;
     }
+
+    // TODO: need to use the latest libraries cause java 8 didn't have records. 
+    // static record Point(int x, int y) {
+    // }
 
     static String concat(String a, String b) {
         return a + b;
